@@ -82,6 +82,7 @@ export default function ManagerDashboard({ user, onLogout }) {
     }
   }, [showEditServiceModal, editingService]);
 
+ 
   useEffect(() => {
     const fetchCoreData = async () => {
       if (!token) return;
