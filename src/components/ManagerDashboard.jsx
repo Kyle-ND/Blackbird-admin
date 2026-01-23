@@ -1222,6 +1222,10 @@ export default function ManagerDashboard({ user, onLogout }) {
     description: '',
   });
 
+  const [topWeeklyClient, setTopWeeklyClient] = useState(null);
+  const [topMonthlyClient, setTopMonthlyClient] = useState(null);
+  const [topTechnicians, setTopTechnicians] = useState([]);
+
   const token = localStorage.getItem("access_token");
   const selectedDateKey = selectedDate.toISOString().split("T")[0];
 
@@ -1353,6 +1357,37 @@ export default function ManagerDashboard({ user, onLogout }) {
       fetchRevenueData();
     }
   }, [viewMode, token, weeklyRevenue]);
+
+  useEffect(() => {
+    if (viewMode === "analytics" && token) {
+      const fetchAnalytics = async () => {
+        try {
+          const [weeklyClientRes, monthlyClientRes, topTechsRes] = await Promise.all([
+            fetch("/proxy-api/manager/top-clients?period=week&limit=1", { headers: { Authorization: `Bearer ${token}` } }),
+            fetch("/proxy-api/manager/top-clients?period=month&limit=1", { headers: { Authorization: `Bearer ${token}` } }),
+            fetch("/proxy-api/manager/top-technicians?period=month&limit=5", { headers: { Authorization: `Bearer ${token}` } }),
+          ]);
+
+          if (weeklyClientRes.ok) {
+            const data = await weeklyClientRes.json();
+            setTopWeeklyClient(data[0] || null);
+          }
+
+          if (monthlyClientRes.ok) {
+            const data = await monthlyClientRes.json();
+            setTopMonthlyClient(data[0] || null);
+          }
+
+          if (topTechsRes.ok) {
+            setTopTechnicians(await topTechsRes.json());
+          }
+        } catch {
+          showToast("error", "Failed to load analytics");
+        }
+      };
+      fetchAnalytics();
+    }
+  }, [viewMode, token]);
 
   const filteredBookings = bookings
     .filter(b => !selectedTech || b.agent?.name === selectedTech)
@@ -1727,6 +1762,9 @@ export default function ManagerDashboard({ user, onLogout }) {
             <button onClick={() => setViewMode("revenue")} className={`w-full text-left px-4 py-4 rounded-2xl flex items-center gap-3 transition ${viewMode === "revenue" ? "bg-[#985f99] text-white shadow-lg" : "hover:bg-[#985f99]/5 text-[#985f99]"}`}>
               <TrendingUp className="w-5 h-5" /> Revenue Report
             </button>
+            <button onClick={() => setViewMode("analytics")} className={`w-full text-left px-4 py-4 rounded-2xl flex items-center gap-3 transition ${viewMode === "analytics" ? "bg-[#985f99] text-white shadow-lg" : "hover:bg-[#985f99]/5 text-[#985f99]"}`}>
+              <Star className="w-5 h-5" /> Analytics
+            </button>
             <button onClick={() => setViewMode("technicians")} className={`w-full text-left px-4 py-4 rounded-2xl flex items-center gap-3 transition ${viewMode === "technicians" ? "bg-[#985f99] text-white shadow-lg" : "hover:bg-[#985f99]/5 text-[#985f99]"}`}>
               <UserCog className="w-5 h-5" /> Technicians
             </button>
@@ -1878,6 +1916,55 @@ export default function ManagerDashboard({ user, onLogout }) {
                           <p className="text-sm text-[#6B5E50] mt-2">{weeklyRevenue.bookings_count} bookings</p>
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {viewMode === "analytics" && (
+                    <div className="bg-white/80 backdrop-blur-xl rounded-3xl shadow-2xl border border-[#D4AF87]/20 p-6">
+                      <h3 className="text-2xl font-['Playfair_Display'] text-[#985f99] mb-6">Business Analytics</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="p-6 bg-[#985f99]/10 rounded-3xl">
+                          <p className="text-xl font-medium text-[#985f99]">Most Visited Client (Week)</p>
+                          {topWeeklyClient ? (
+                            <>
+                              <p className="text-3xl font-['Playfair_Display'] text-[#D4AF87] mt-2">{topWeeklyClient.name}</p>
+                              <p className="text-sm text-[#6B5E50] mt-2">{topWeeklyClient.visits} visits</p>
+                            </>
+                          ) : (
+                            <p className="text-sm text-[#6B5E50] mt-2">No data</p>
+                          )}
+                        </div>
+                        <div className="p-6 bg-[#D4AF87]/10 rounded-3xl">
+                          <p className="text-xl font-medium text-[#985f99]">Most Visited Client (Month)</p>
+                          {topMonthlyClient ? (
+                            <>
+                              <p className="text-3xl font-['Playfair_Display'] text-[#D4AF87] mt-2">{topMonthlyClient.name}</p>
+                              <p className="text-sm text-[#6B5E50] mt-2">{topMonthlyClient.visits} visits</p>
+                            </>
+                          ) : (
+                            <p className="text-sm text-[#6B5E50] mt-2">No data</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-8">
+                        <h4 className="text-xl font-medium text-[#6B5E50] mb-4">Top Performing Technicians (Month)</h4>
+                        <div className="space-y-4">
+                          {topTechnicians.length > 0 ? topTechnicians.map((tech, index) => (
+                            <div key={tech.id} className="p-6 rounded-3xl bg-gradient-to-r from-white to-[#f0ebe3]/50 shadow-md flex justify-between items-center">
+                              <div className="flex items-center gap-4">
+                                <span className="text-2xl font-bold text-[#D4AF87]">{index + 1}</span>
+                                <div>
+                                  <p className="text-lg font-medium text-[#985f99]">{tech.name}</p>
+                                  <p className="text-sm text-[#6B5E50]">{tech.bookings} bookings • R{formatCurrency(tech.revenue)}</p>
+                                </div>
+                              </div>
+                              <Star className="w-6 h-6 text-[#D4AF87]" />
+                            </div>
+                          )) : (
+                            <p className="text-center text-[#6B5E50]">No data available</p>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )}
 
