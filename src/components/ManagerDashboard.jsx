@@ -87,50 +87,50 @@ export default function ManagerDashboard({ user, onLogout }) {
   }, [showEditServiceModal, editingService]);
 
  
-  useEffect(() => {
-    const fetchCoreData = async () => {
-      if (!token) return;
-      try {
-        setLoading(true);
-        const [techRes, servRes, dailyRes] = await Promise.all([
-          fetch("/proxy-api/agents", { headers: { Authorization: `Bearer ${token}` } }),
-          fetch("/proxy-api/services/", { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`/proxy-api/manager/stats/daily?date=${selectedDateKey}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          }),
-        ]);
+useEffect(() => {
+  const fetchCoreData = async () => {
+    if (!token) return;
+    try {
+      setLoading(true);
+      const [techRes, servRes, dailyRes] = await Promise.all([
+        fetch("/proxy-api/agents", { headers: { Authorization: `Bearer ${token}` } }),
+        fetch("/proxy-api/services/", { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`/proxy-api/manager/stats/daily?date=${selectedDateKey}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+      ]);
 
-        let error = false;
+      let error = false;
 
-        if (techRes.ok) {
-          setTechnicians((await techRes.json()).map(t => ({ ...t, active_status: t.active_status ?? true })));
-        } else {
-          error = true;
-        }
-
-        if (servRes.ok) {
-          setServices((await servRes.json()).map(s => ({ ...s, price: parseFloat(s.price) })));
-        } else {
-          error = true;
-        }
-
-        if (dailyRes.ok) {
-          setDailyStats(await dailyRes.json());
-        } else {
-          error = true;
-        }
-
-        if (error) {
-          showToast("error", "Some core data could not be loaded");
-        }
-      } catch (err) {
-        showToast("error", "Failed to load dashboard");
-      } finally {
-        setLoading(false);
+      if (techRes.ok) {
+        setTechnicians((await techRes.json()).map(t => ({ ...t, active_status: t.active_status ?? true })));
+      } else {
+        error = true;
       }
-    };
-    fetchCoreData();
-  }, [token, selectedDateKey]);
+
+      if (servRes.ok) {
+        setServices((await servRes.json()).map(s => ({ ...s, price: parseFloat(s.price) })));
+      } else {
+        error = true;
+      }
+
+      if (dailyRes.ok) {
+        setDailyStats(await dailyRes.json());
+      } else {
+        error = true;
+      }
+
+      if (error) {
+        showToast("error", "Some core data could not be loaded");
+      }
+    } catch (err) {
+      console.error("Dashboard fetch error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+  fetchCoreData();
+}, [token, selectedDateKey]);
 
   useEffect(() => {
     const fetchBookings = async () => {
