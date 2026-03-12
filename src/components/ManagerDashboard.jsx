@@ -86,36 +86,14 @@ export default function ManagerDashboard({ user, onLogout }) {
     }
   }, [showEditServiceModal, editingService]);
 
-  // Separate services fetch (runs once on mount - more reliable in deployed builds)
-  useEffect(() => {
-    const fetchServices = async () => {
-      if (!token) return;
-      try {
-        const servRes = await fetch("/proxy-api/services/", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (servRes.ok) {
-          const data = await servRes.json();
-          setServices(data.map(s => ({ ...s, price: parseFloat(s.price) })));
-          console.log("✅ Services loaded:", data.length); // Debug in console
-        } else {
-          console.error("Services fetch failed:", servRes.status);
-        }
-      } catch (err) {
-        console.error("Services fetch error:", err);
-      }
-    };
-    fetchServices();
-  }, [token]);
-
-  // Core data for other things (agents, stats, etc.)
   useEffect(() => {
     const fetchCoreData = async () => {
       if (!token) return;
       try {
         setLoading(true);
-        const [techRes, dailyRes] = await Promise.all([
-          fetch("/proxy-api/agents", { headers: { Authorization: `Bearer ${token}` } }),
+        const [techRes, servRes, dailyRes] = await Promise.all([
+          fetch("/proxy-api/agents/", { headers: { Authorization: `Bearer ${token}` } }),   // ← FIXED: trailing slash (matches receptionist)
+          fetch("/proxy-api/services/", { headers: { Authorization: `Bearer ${token}` } }),
           fetch(`/proxy-api/manager/stats/daily?date=${selectedDateKey}`, {
             headers: { Authorization: `Bearer ${token}` },
           }),
@@ -125,6 +103,12 @@ export default function ManagerDashboard({ user, onLogout }) {
 
         if (techRes.ok) {
           setTechnicians((await techRes.json()).map(t => ({ ...t, active_status: t.active_status ?? true })));
+        } else {
+          error = true;
+        }
+
+        if (servRes.ok) {
+          setServices((await servRes.json()).map(s => ({ ...s, price: parseFloat(s.price) })));
         } else {
           error = true;
         }
@@ -273,148 +257,148 @@ export default function ManagerDashboard({ user, onLogout }) {
     return isNaN(num) ? "0.00" : num.toFixed(2);
   };
 
+
   const handleSaveService = async (e) => {
-    e.preventDefault();
-    const trimmedName = serviceForm.name.trim();
-    const trimmedCategory = serviceForm.category.trim();
-    const trimmedDescription = serviceForm.description?.trim();
-    if (!trimmedName) {
-      showToast("error", "Name is required");
-      return;
-    }
-    if (!trimmedCategory) {
-      showToast("error", "Category is required");
-      return;
-    }
-    const duration = parseInt(serviceForm.duration_minutes, 10);
-    if (isNaN(duration) || duration <= 0) {
-      showToast("error", "Duration must be a positive integer");
-      return;
-    }
-    const priceValue = parseFloat(serviceForm.price);
-    if (isNaN(priceValue) || priceValue <= 0) {
-      showToast("error", "Price must be a positive number");
-      return;
-    }
-    
-    const payload = {
-      name: trimmedName,
-      category: trimmedCategory,
-      duration_minutes: duration,
-      price: priceValue, 
-    };
-    if (trimmedDescription) {
-      payload.description = trimmedDescription;
-    }
-    
-    console.log("Sending payload:", payload);
-    
-    try {
-      let res;
-      if (editingService) {
-        res = await fetch(`/proxy-api/services/${editingService.id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        });
-      } else {
-        res = await fetch(`/proxy-api/services/`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        });
-      }
-      
-      console.log("Response status:", res.status);
-      console.log("Response ok:", res.ok);
-      
-      if (!res.ok) {
-        let errMessage = editingService ? "Failed to update service" : "Failed to create service";
-        try {
-          const errData = await res.json();
-          console.error("Error response:", errData);
-          errMessage = errData.detail || errData.message || errMessage;
-        } catch (parseError) {
-          console.error("Could not parse error response");
-        }
-        showToast("error", errMessage);
-        return;
-      }
-      
-      const updated = await res.json();
-      console.log("Success response:", updated);
-      console.log("Is array?", Array.isArray(updated));
-      
-      // Handle both single service and array response
-      if (Array.isArray(updated)) {
-        console.warn("Backend returned array instead of single service");
-        console.log("Searching for service with name:", payload.name);
-        
-        const newService = updated.find(s => 
-          s.name === payload.name && 
-          s.category === payload.category &&
-          (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
-          s.duration_minutes === payload.duration_minutes
-        );
-        
-        if (newService) {
-          console.log("Found new service:", newService);
-          setServices(updated.map(s => ({ ...s, price: parseFloat(s.price) })));
-          showToast("success", editingService ? "Service updated" : "Service created");
-        } else {
-          console.error("Could not find newly created service in response");
-          console.log("Attempting to refresh services list...");
-          
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          try {
-            const refreshRes = await fetch("/proxy-api/services/", {
-              headers: { Authorization: `Bearer ${token}` }
-            });
-            if (refreshRes.ok) {
-              const allServices = await refreshRes.json();
-              console.log("Refreshed services count:", allServices.length);
-              
-              const foundAfterRefresh = allServices.find(s => 
-                s.name === payload.name && 
-                s.category === payload.category &&
-                (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
-                s.duration_minutes === payload.duration_minutes
-              );
-              
-              if (foundAfterRefresh) {
-                console.log("Service found after refresh:", foundAfterRefresh);
-                setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
-                showToast("success", "Service created successfully");
-              } else {
-                console.error("Service still not found after refresh - backend may not have saved it");
-                setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
-                showToast("error", "Service may not have been saved. Please check with backend team.");
-              }
-            }
-          } catch (refreshError) {
-            console.error("Failed to refresh services:", refreshError);
-            showToast("error", "Could not verify service creation");
-          }
-        }
-      } else {
-        console.log("Single service returned:", updated);
-        if (editingService) {
-          setServices(prev => prev.map(s => s.id === updated.id ? { ...updated, price: parseFloat(updated.price) } : s));
-          showToast("success", "Service updated");
-        } else {
-          setServices(prev => [...prev, { ...updated, price: parseFloat(updated.price) }]);
-          showToast("success", "Service created");
-        }
-      }
-      
-      setShowEditServiceModal(false);
-      setEditingService(null);
-    } catch (err) {
-      console.error("Exception during save:", err);
-      showToast("error", editingService ? "Failed to update service" : "Failed to create service");
-    }
+  e.preventDefault();
+  const trimmedName = serviceForm.name.trim();
+  const trimmedCategory = serviceForm.category.trim();
+  const trimmedDescription = serviceForm.description?.trim();
+  if (!trimmedName) {
+    showToast("error", "Name is required");
+    return;
+  }
+  if (!trimmedCategory) {
+    showToast("error", "Category is required");
+    return;
+  }
+  const duration = parseInt(serviceForm.duration_minutes, 10);
+  if (isNaN(duration) || duration <= 0) {
+    showToast("error", "Duration must be a positive integer");
+    return;
+  }
+  const priceValue = parseFloat(serviceForm.price);
+  if (isNaN(priceValue) || priceValue <= 0) {
+    showToast("error", "Price must be a positive number");
+    return;
+  }
+  
+  const payload = {
+    name: trimmedName,
+    category: trimmedCategory,
+    duration_minutes: duration,
+    price: priceValue, 
   };
+  if (trimmedDescription) {
+    payload.description = trimmedDescription;
+  }
+  
+  console.log("Sending payload:", payload);
+  
+  try {
+    let res;
+    if (editingService) {
+      res = await fetch(`/proxy-api/services/${editingService.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      res = await fetch(`/proxy-api/services/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+    }
+    
+    console.log("Response status:", res.status);
+    console.log("Response ok:", res.ok);
+    
+    if (!res.ok) {
+      let errMessage = editingService ? "Failed to update service" : "Failed to create service";
+      try {
+        const errData = await res.json();
+        console.error("Error response:", errData);
+        errMessage = errData.detail || errData.message || errMessage;
+      } catch (parseError) {
+        console.error("Could not parse error response");
+      }
+      showToast("error", errMessage);
+      return;
+    }
+    
+    const updated = await res.json();
+    console.log("Success response:", updated);
+    console.log("Is array?", Array.isArray(updated));
+    
+    if (Array.isArray(updated)) {
+      console.warn("Backend returned array instead of single service");
+      console.log("Searching for service with name:", payload.name);
+      
+      const newService = updated.find(s => 
+        s.name === payload.name && 
+        s.category === payload.category &&
+        (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
+        s.duration_minutes === payload.duration_minutes
+      );
+      
+      if (newService) {
+        console.log("Found new service:", newService);
+        setServices(updated.map(s => ({ ...s, price: parseFloat(s.price) })));
+        showToast("success", editingService ? "Service updated" : "Service created");
+      } else {
+        console.error("Could not find newly created service in response");
+        console.log("Attempting to refresh services list...");
+        
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        try {
+          const refreshRes = await fetch("/proxy-api/services/", {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (refreshRes.ok) {
+            const allServices = await refreshRes.json();
+            console.log("Refreshed services count:", allServices.length);
+            
+            const foundAfterRefresh = allServices.find(s => 
+              s.name === payload.name && 
+              s.category === payload.category &&
+              (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
+              s.duration_minutes === payload.duration_minutes
+            );
+            
+            if (foundAfterRefresh) {
+              console.log("Service found after refresh:", foundAfterRefresh);
+              setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
+              showToast("success", "Service created successfully");
+            } else {
+              console.error("Service still not found after refresh - backend may not have saved it");
+              setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
+              showToast("error", "Service may not have been saved. Please check with backend team.");
+            }
+          }
+        } catch (refreshError) {
+          console.error("Failed to refresh services:", refreshError);
+          showToast("error", "Could not verify service creation");
+        }
+      }
+    } else {
+      console.log("Single service returned:", updated);
+      if (editingService) {
+        setServices(prev => prev.map(s => s.id === updated.id ? { ...updated, price: parseFloat(updated.price) } : s));
+        showToast("success", "Service updated");
+      } else {
+        setServices(prev => [...prev, { ...updated, price: parseFloat(updated.price) }]);
+        showToast("success", "Service created");
+      }
+    }
+    
+    setShowEditServiceModal(false);
+    setEditingService(null);
+  } catch (err) {
+    console.error("Exception during save:", err);
+    showToast("error", editingService ? "Failed to update service" : "Failed to create service");
+  }
+};
 
   const handleSaveTech = async (e) => {
     e.preventDefault();
@@ -563,7 +547,7 @@ export default function ManagerDashboard({ user, onLogout }) {
     const year = selectedDate.getFullYear();
     const month = selectedDate.getMonth();
     const firstWeekday = new Date(year, month, 1).getDay();
-    const offset = (firstWeekday + 6) % 7; // Mon=0, Tue=1, ..., Sun=6
+    const offset = (firstWeekday + 6) % 7;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     return (
       <div className="grid grid-cols-7 gap-2 text-center">
@@ -592,7 +576,7 @@ export default function ManagerDashboard({ user, onLogout }) {
       <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
       <div className="min-h-screen bg-[#F8F6F2] font-['Inter'] flex">
 
-        {/* Sidebar – exactly the beautiful one you love */}
+        {/* Sidebar */}
         <aside className={`fixed inset-y-0 left-0 w-72 bg-[#F8F6F2]/95 lg:bg-white/95 backdrop-blur-2xl shadow-2xl border-r border-[#D4AF87]/20 z-50 transform transition-transform duration-300 ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"}`}>
           <div className="p-6 border-b border-[#D4AF87]/20 relative">
             <h1 className="text-3xl font-['Playfair_Display'] text-[#985f99]">Blackbird Spa</h1>
@@ -860,8 +844,6 @@ export default function ManagerDashboard({ user, onLogout }) {
                           <Plus className="w-5 h-5" /> Add Service
                         </button>
                       </div>
-                      {/* Debug: show count */}
-                      <div className="text-sm text-green-600 mb-4">Loaded {services.length} services from server</div>
                       {Object.entries(services.reduce((acc, s) => {
                         const cat = s.category || "General";
                         if (!acc[cat]) acc[cat] = [];
@@ -893,7 +875,7 @@ export default function ManagerDashboard({ user, onLogout }) {
           </main>
         </div>
 
-        {/* Toast – always visible */}
+        {/* Toast */}
         {toast && (
           <div className={`fixed top-4 right-4 px-6 py-4 rounded-xl shadow-xl ${getToastClasses(toast.type)} z-50 flex items-center gap-4`}>
             <span>{toast.message}</span>
@@ -901,7 +883,7 @@ export default function ManagerDashboard({ user, onLogout }) {
           </div>
         )}
 
-        {/* All 4 modals – complete and working */}
+        {/* All 4 modals */}
         {selectedClient && clientHistory && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
             <div className="bg-white/95 backdrop-blur-xl rounded-3xl p-8 max-w-md w-full shadow-2xl">
