@@ -87,50 +87,52 @@ export default function ManagerDashboard({ user, onLogout }) {
   }, [showEditServiceModal, editingService]);
 
  
-useEffect(() => {
-  const fetchCoreData = async () => {
-    if (!token) return;
-    try {
-      setLoading(true);
-      const [techRes, servRes, dailyRes] = await Promise.all([
-        fetch("/proxy-api/agents", { headers: { Authorization: `Bearer ${token}` } }),
-        fetch("/proxy-api/services/", { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`/proxy-api/manager/stats/daily?date=${selectedDateKey}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-      ]);
+  useEffect(() => {
+    const fetchCoreData = async () => {
+      if (!token) return;
+      try {
+        setLoading(true);
+        const [techRes, servRes, dailyRes] = await Promise.all([
+          fetch("/proxy-api/agents", { headers: { Authorization: `Bearer ${token}` } }),
+          fetch("/proxy-api/services", { headers: { Authorization: `Bearer ${token}` } }),   // ← FIXED: no trailing slash
+          fetch(`/proxy-api/manager/stats/daily?date=${selectedDateKey}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+        ]);
 
-      let error = false;
+        let error = false;
 
-      if (techRes.ok) {
-        setTechnicians((await techRes.json()).map(t => ({ ...t, active_status: t.active_status ?? true })));
-      } else {
-        error = true;
+        if (techRes.ok) {
+          setTechnicians((await techRes.json()).map(t => ({ ...t, active_status: t.active_status ?? true })));
+        } else {
+          error = true;
+        }
+
+        if (servRes.ok) {
+          const data = await servRes.json();
+          setServices(data.map(s => ({ ...s, price: parseFloat(s.price) })));
+        } else {
+          console.error("Services fetch failed:", servRes.status);
+          error = true;
+        }
+
+        if (dailyRes.ok) {
+          setDailyStats(await dailyRes.json());
+        } else {
+          error = true;
+        }
+
+        if (error) {
+          showToast("error", "Some core data could not be loaded");
+        }
+      } catch (err) {
+        console.error("Dashboard fetch error:", err);
+      } finally {
+        setLoading(false);
       }
-
-      if (servRes.ok) {
-        setServices((await servRes.json()).map(s => ({ ...s, price: parseFloat(s.price) })));
-      } else {
-        error = true;
-      }
-
-      if (dailyRes.ok) {
-        setDailyStats(await dailyRes.json());
-      } else {
-        error = true;
-      }
-
-      if (error) {
-        showToast("error", "Some core data could not be loaded");
-      }
-    } catch (err) {
-      console.error("Dashboard fetch error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-  fetchCoreData();
-}, [token, selectedDateKey]);
+    };
+    fetchCoreData();
+  }, [token, selectedDateKey]);
 
   useEffect(() => {
     const fetchBookings = async () => {
@@ -260,147 +262,148 @@ useEffect(() => {
 
 
   const handleSaveService = async (e) => {
-  e.preventDefault();
-  const trimmedName = serviceForm.name.trim();
-  const trimmedCategory = serviceForm.category.trim();
-  const trimmedDescription = serviceForm.description?.trim();
-  if (!trimmedName) {
-    showToast("error", "Name is required");
-    return;
-  }
-  if (!trimmedCategory) {
-    showToast("error", "Category is required");
-    return;
-  }
-  const duration = parseInt(serviceForm.duration_minutes, 10);
-  if (isNaN(duration) || duration <= 0) {
-    showToast("error", "Duration must be a positive integer");
-    return;
-  }
-  const priceValue = parseFloat(serviceForm.price);
-  if (isNaN(priceValue) || priceValue <= 0) {
-    showToast("error", "Price must be a positive number");
-    return;
-  }
-  
-  // Build payload, sending price as number; omit description if empty/null
-  const payload = {
-    name: trimmedName,
-    category: trimmedCategory,
-    duration_minutes: duration,
-    price: priceValue, 
-  };
-  if (trimmedDescription) {
-    payload.description = trimmedDescription;
-  }
-  
-  console.log("Sending payload:", payload);
-  
-  try {
-    let res;
-    if (editingService) {
-      res = await fetch(`/proxy-api/services/${editingService.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      });
-    } else {
-      res = await fetch(`/proxy-api/services/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      });
+    e.preventDefault();
+    const trimmedName = serviceForm.name.trim();
+    const trimmedCategory = serviceForm.category.trim();
+    const trimmedDescription = serviceForm.description?.trim();
+    if (!trimmedName) {
+      showToast("error", "Name is required");
+      return;
     }
-    
-    console.log("Response status:", res.status);
-    console.log("Response ok:", res.ok);
-    
-    if (!res.ok) {
-      let errMessage = editingService ? "Failed to update service" : "Failed to create service";
-      try {
-        const errData = await res.json();
-        console.error("Error response:", errData);
-        errMessage = errData.detail || errData.message || errMessage;
-      } catch (parseError) {
-        console.error("Could not parse error response");
-      }
-      showToast("error", errMessage);
+    if (!trimmedCategory) {
+      showToast("error", "Category is required");
+      return;
+    }
+    const duration = parseInt(serviceForm.duration_minutes, 10);
+    if (isNaN(duration) || duration <= 0) {
+      showToast("error", "Duration must be a positive integer");
+      return;
+    }
+    const priceValue = parseFloat(serviceForm.price);
+    if (isNaN(priceValue) || priceValue <= 0) {
+      showToast("error", "Price must be a positive number");
       return;
     }
     
-    const updated = await res.json();
-    console.log("Success response:", updated);
-    console.log("Is array?", Array.isArray(updated));
-    
-    if (Array.isArray(updated)) {
-      console.warn("Backend returned array instead of single service");
-      console.log("Searching for service with name:", payload.name);
-      
-      const newService = updated.find(s => 
-        s.name === payload.name && 
-        s.category === payload.category &&
-        (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
-        s.duration_minutes === payload.duration_minutes
-      );
-      
-      if (newService) {
-        console.log("Found new service:", newService);
-        setServices(updated.map(s => ({ ...s, price: parseFloat(s.price) })));
-        showToast("success", editingService ? "Service updated" : "Service created");
-      } else {
-        console.error("Could not find newly created service in response");
-        console.log("Attempting to refresh services list...");
-        
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        try {
-          const refreshRes = await fetch("/proxy-api/services/", {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          if (refreshRes.ok) {
-            const allServices = await refreshRes.json();
-            console.log("Refreshed services count:", allServices.length);
-            
-            const foundAfterRefresh = allServices.find(s => 
-              s.name === payload.name && 
-              s.category === payload.category &&
-              (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
-              s.duration_minutes === payload.duration_minutes
-            );
-            
-            if (foundAfterRefresh) {
-              console.log("Service found after refresh:", foundAfterRefresh);
-              setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
-              showToast("success", "Service created successfully");
-            } else {
-              console.error("Service still not found after refresh - backend may not have saved it");
-              setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
-              showToast("error", "Service may not have been saved. Please check with backend team.");
-            }
-          }
-        } catch (refreshError) {
-          console.error("Failed to refresh services:", refreshError);
-          showToast("error", "Could not verify service creation");
-        }
-      }
-    } else {
-      console.log("Single service returned:", updated);
-      if (editingService) {
-        setServices(prev => prev.map(s => s.id === updated.id ? { ...updated, price: parseFloat(updated.price) } : s));
-        showToast("success", "Service updated");
-      } else {
-        setServices(prev => [...prev, { ...updated, price: parseFloat(updated.price) }]);
-        showToast("success", "Service created");
-      }
+    // Build payload, sending price as number; omit description if empty/null
+    const payload = {
+      name: trimmedName,
+      category: trimmedCategory,
+      duration_minutes: duration,
+      price: priceValue, 
+    };
+    if (trimmedDescription) {
+      payload.description = trimmedDescription;
     }
     
-    setShowEditServiceModal(false);
-    setEditingService(null);
-  } catch (err) {
-    console.error("Exception during save:", err);
-    showToast("error", editingService ? "Failed to update service" : "Failed to create service");
-  }
-};
+    console.log("Sending payload:", payload);
+    
+    try {
+      let res;
+      if (editingService) {
+        res = await fetch(`/proxy-api/services/${editingService.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload),
+        });
+      } else {
+        res = await fetch(`/proxy-api/services`, {   // ← FIXED: no trailing slash
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload),
+        });
+      }
+      
+      console.log("Response status:", res.status);
+      console.log("Response ok:", res.ok);
+      
+      if (!res.ok) {
+        let errMessage = editingService ? "Failed to update service" : "Failed to create service";
+        try {
+          const errData = await res.json();
+          console.error("Error response:", errData);
+          errMessage = errData.detail || errData.message || errMessage;
+        } catch (parseError) {
+          console.error("Could not parse error response");
+        }
+        showToast("error", errMessage);
+        return;
+      }
+      
+      const updated = await res.json();
+      console.log("Success response:", updated);
+      console.log("Is array?", Array.isArray(updated));
+      
+      // Handle both single service and array response
+      if (Array.isArray(updated)) {
+        console.warn("Backend returned array instead of single service");
+        console.log("Searching for service with name:", payload.name);
+        
+        const newService = updated.find(s => 
+          s.name === payload.name && 
+          s.category === payload.category &&
+          (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
+          s.duration_minutes === payload.duration_minutes
+        );
+        
+        if (newService) {
+          console.log("Found new service:", newService);
+          setServices(updated.map(s => ({ ...s, price: parseFloat(s.price) })));
+          showToast("success", editingService ? "Service updated" : "Service created");
+        } else {
+          console.error("Could not find newly created service in response");
+          console.log("Attempting to refresh services list...");
+          
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          try {
+            const refreshRes = await fetch("/proxy-api/services", {   // ← FIXED: no trailing slash
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (refreshRes.ok) {
+              const allServices = await refreshRes.json();
+              console.log("Refreshed services count:", allServices.length);
+              
+              const foundAfterRefresh = allServices.find(s => 
+                s.name === payload.name && 
+                s.category === payload.category &&
+                (parseFloat(s.price) === payload.price || s.price === payload.price.toString()) &&
+                s.duration_minutes === payload.duration_minutes
+              );
+              
+              if (foundAfterRefresh) {
+                console.log("Service found after refresh:", foundAfterRefresh);
+                setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
+                showToast("success", "Service created successfully");
+              } else {
+                console.error("Service still not found after refresh - backend may not have saved it");
+                setServices(allServices.map(s => ({ ...s, price: parseFloat(s.price) })));
+                showToast("error", "Service may not have been saved. Please check with backend team.");
+              }
+            }
+          } catch (refreshError) {
+            console.error("Failed to refresh services:", refreshError);
+            showToast("error", "Could not verify service creation");
+          }
+        }
+      } else {
+        console.log("Single service returned:", updated);
+        if (editingService) {
+          setServices(prev => prev.map(s => s.id === updated.id ? { ...updated, price: parseFloat(updated.price) } : s));
+          showToast("success", "Service updated");
+        } else {
+          setServices(prev => [...prev, { ...updated, price: parseFloat(updated.price) }]);
+          showToast("success", "Service created");
+        }
+      }
+      
+      setShowEditServiceModal(false);
+      setEditingService(null);
+    } catch (err) {
+      console.error("Exception during save:", err);
+      showToast("error", editingService ? "Failed to update service" : "Failed to create service");
+    }
+  };
 
   const handleSaveTech = async (e) => {
     e.preventDefault();
