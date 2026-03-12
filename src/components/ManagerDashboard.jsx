@@ -307,7 +307,7 @@ export default function ManagerDashboard({ user, onLogout }) {
           body: JSON.stringify(payload),
         });
       } else {
-        res = await fetch(`/proxy-api/services`, {   // ← FIXED: no trailing slash
+        res = await fetch(`/proxy-api/services/`, {   // ← FIXED: no trailing slash
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify(payload),
@@ -357,7 +357,7 @@ export default function ManagerDashboard({ user, onLogout }) {
           await new Promise(resolve => setTimeout(resolve, 500));
           
           try {
-            const refreshRes = await fetch("/proxy-api/services", {   // ← FIXED: no trailing slash
+            const refreshRes = await fetch("/proxy-api/services/", {   // ← FIXED: no trailing slash
               headers: { Authorization: `Bearer ${token}` }
             });
             if (refreshRes.ok) {
