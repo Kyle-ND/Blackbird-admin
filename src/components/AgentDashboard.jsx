@@ -1,7 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { LogOut, X, CalendarDays, ChevronDown } from "lucide-react";
 
-const formatDateKey = (date) => date.toISOString().split("T")[0];
+const formatDateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 const fixDecimalResponse = (text) => {
   try { return JSON.parse(text); }
@@ -13,6 +18,28 @@ const fixDecimalResponse = (text) => {
   }
 };
 
+// ── TIMEZONE HELPER: get SAST hour integer from UTC string ──
+const getSASTHour = (utcString) => {
+  return parseInt(
+    new Date(utcString).toLocaleString("en-US", {
+      hour: "numeric",
+      hour12: false,
+      timeZone: "Africa/Johannesburg",
+    }),
+    10
+  );
+};
+
+// ── TIMEZONE HELPER: format UTC string as SAST time display ──
+const toSASTTime = (utcString) => {
+  return new Date(utcString).toLocaleTimeString("en-ZA", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Africa/Johannesburg",
+  });
+};
+
 export default function AgentDashboard({ user, onLogout }) {
   const [bookings, setBookings] = useState({});
   const [loading, setLoading] = useState(true);
@@ -20,7 +47,11 @@ export default function AgentDashboard({ user, onLogout }) {
   const [toast, setToast] = useState(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
-  const todayKey = formatDateKey(new Date());
+  // ── FIX: use SAST today key, not UTC ──
+  const todayKey = new Date().toLocaleDateString("en-CA", {
+    timeZone: "Africa/Johannesburg",
+  });
+
   const hours = Array.from({ length: 12 }, (_, i) => i + 9);
 
   useEffect(() => {
@@ -35,13 +66,18 @@ export default function AgentDashboard({ user, onLogout }) {
         const text = await res.text();
         const data = fixDecimalResponse(text);
         const grouped = data.reduce((acc, b) => {
-          const dateKey = new Date(b.start_time).toISOString().split("T")[0];
+          // ── FIX: group by SAST date, not UTC date ──
+          const dateKey = new Date(b.start_time).toLocaleDateString("en-CA", {
+            timeZone: "Africa/Johannesburg",
+          });
           if (!acc[dateKey]) acc[dateKey] = [];
           const price = typeof b.total_price === "string" ? parseFloat(b.total_price) : b.total_price || 0;
           acc[dateKey].push({
             id: b.id,
-            time: new Date(b.start_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            hour: new Date(b.start_time).getHours(),
+            // ── FIX: display time in SAST ──
+            time: toSASTTime(b.start_time),
+            // ── FIX: hour in SAST for schedule grouping ──
+            hour: getSASTHour(b.start_time),
             client: b.client.name,
             services: b.services.map(s => s.name),
             totalPrice: price,
@@ -100,7 +136,7 @@ export default function AgentDashboard({ user, onLogout }) {
                 <span className="hidden sm:block text-[10px] tracking-[4px] text-[#6B5E50] uppercase font-medium mt-0.5">Spa</span>
               </div>
 
-              {/* Active nav pill (agent only has one view) */}
+              {/* Active nav pill */}
               <nav className="hidden md:flex items-center gap-1">
                 <button className="px-4 py-2 rounded-xl text-sm font-medium bg-[#985f99]/15 text-[#985f99] border border-[#985f99]/20 flex items-center gap-2">
                   <CalendarDays className="w-4 h-4" /> Appointments
@@ -144,7 +180,7 @@ export default function AgentDashboard({ user, onLogout }) {
             {/* Page header */}
             <div className="mb-8">
               <p className="text-xs tracking-[4px] uppercase text-[#6B5E50]/60 mb-2">
-                {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Africa/Johannesburg" })}
               </p>
               <h2 className="serif text-3xl sm:text-4xl text-[#985f99]">
                 Hi, {user?.name}
