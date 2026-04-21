@@ -49,7 +49,14 @@ export default function ManagerDashboard({ user, onLogout }) {
   const [topMonthlyClient, setTopMonthlyClient] = useState(null);
   const [topTechnicians, setTopTechnicians] = useState([]);
   const token = localStorage.getItem("access_token");
-  const selectedDateKey = selectedDate.toISOString().split("T")[0];
+
+  const toLocalDateKey = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+  const selectedDateKey = toLocalDateKey(selectedDate);
 
   const navItems = [
     { mode: "overview", label: "Overview", icon: BarChart3 },
@@ -155,6 +162,16 @@ export default function ManagerDashboard({ user, onLogout }) {
   const formatCurrency = (value) => {
     const num = parseFloat(value);
     return isNaN(num) ? "0.00" : num.toFixed(2);
+  };
+
+  // ── TIMEZONE HELPER ──
+  const toSASTTime = (utcString) => {
+    return new Date(utcString).toLocaleTimeString("en-ZA", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Africa/Johannesburg",
+    });
   };
 
   const handleSaveService = async (e) => {
@@ -431,7 +448,10 @@ export default function ManagerDashboard({ user, onLogout }) {
                               <div className="flex gap-4 items-start min-w-0">
                                 <div className={`w-1 self-stretch rounded-full flex-shrink-0 ${booking.status === "confirmed" ? "bg-[#985f99]" : "bg-orange-400"}`} />
                                 <div className="min-w-0">
-                                  <p className="serif text-xl text-[#985f99] mb-1">{booking.start_time?.slice(11, 16)}</p>
+                                  {/* ── FIX: display UTC timestamp in SAST ── */}
+                                  <p className="serif text-xl text-[#985f99] mb-1">
+                                    {toSASTTime(booking.start_time)}
+                                  </p>
                                   <p className="text-sm font-medium text-[#985f99] cursor-pointer hover:underline mb-1 truncate" onClick={() => openClientHistory(booking.client.id)}>
                                     {booking.client.name}
                                   </p>
@@ -523,7 +543,6 @@ export default function ManagerDashboard({ user, onLogout }) {
                     <div className="space-y-3">
                       {technicians.map(tech => (
                         <div key={tech.id} className="stat-card border border-[#D4AF87]/20 rounded-2xl p-5 hover:shadow-md transition-all shadow-sm">
-                          {/* Top row: status dot + name/email */}
                           <div className="flex items-start gap-3 mb-4">
                             <div className={`w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0 glow-dot ${tech.active_status ? "bg-emerald-500 text-emerald-500" : "bg-red-400 text-red-400"}`} />
                             <div className="min-w-0 flex-1">
@@ -532,7 +551,6 @@ export default function ManagerDashboard({ user, onLogout }) {
                               <p className="text-xs text-[#6B5E50]/40 mt-0.5">{tech.specialization || "General"}</p>
                             </div>
                           </div>
-                          {/* Bottom row: action buttons */}
                           <div className="flex gap-2 flex-wrap">
                             <button onClick={() => { setEditingTech(tech); setShowEditTechModal(true); }} className="flex items-center gap-1.5 px-3 py-2 bg-[#985f99]/8 border border-[#985f99]/15 rounded-xl hover:bg-[#985f99]/15 transition-colors text-xs font-medium text-[#985f99]">
                               <Edit3 className="w-3.5 h-3.5" /> Edit
