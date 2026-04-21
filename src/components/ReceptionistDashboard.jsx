@@ -44,6 +44,17 @@ const toSASTTime = (utcString) => {
   });
 };
 
+// ── TIMEZONE HELPER: convert SAST date+time input to UTC ISO string ──
+// User types times in SAST (UTC+2), backend expects UTC
+const sastInputToUTC = (dateStr, timeStr) => {
+  // Build a date string treating the input as SAST (UTC+2)
+  // by manually subtracting 2 hours
+  const sastDateTime = new Date(`${dateStr}T${timeStr}:00`);
+  // Subtract 2 hours to get UTC
+  const utcDateTime = new Date(sastDateTime.getTime() - (2 * 60 * 60 * 1000));
+  return utcDateTime.toISOString();
+};
+
 // ─── Shared style tokens (mirror manager) ───────────────────────────────────
 const S = {
   card: "bg-white border border-[#D4AF87]/20 rounded-2xl shadow-sm",
@@ -120,7 +131,7 @@ export default function ReceptionistDashboard({ user, onLogout }) {
           const data = fixDecimalResponse(text);
           if (Array.isArray(data)) {
             const grouped = data.reduce((acc, b) => {
-              // ── FIX: group by SAST date, not UTC date ──
+              // Group by SAST date, not UTC date
               const sastDateKey = new Date(b.start_time).toLocaleDateString("en-CA", {
                 timeZone: "Africa/Johannesburg",
               });
@@ -129,9 +140,9 @@ export default function ReceptionistDashboard({ user, onLogout }) {
               acc[sastDateKey].push({
                 id: b.id,
                 start_time: b.start_time,
-                // ── FIX: display time in SAST ──
+                // Display time in SAST
                 time: toSASTTime(b.start_time),
-                // ── FIX: hour in SAST for schedule grouping ──
+                // Hour in SAST for schedule grouping
                 hour: getSASTHour(b.start_time),
                 client: b.client.name, clientId: b.client.id,
                 services: b.services.map(s => s.name),
@@ -264,11 +275,16 @@ export default function ReceptionistDashboard({ user, onLogout }) {
       return showToast("error", "Please select client, service(s), and time");
     }
     const token = localStorage.getItem("access_token");
-    // ── FIX: send time with +02:00 offset so backend stores correct UTC ──
-    const startDateTime = new Date(`${bookingForm.date}T${bookingForm.time}:00+02:00`);
+
+    // ── FIX: User enters time in SAST (UTC+2). Convert to UTC for the backend
+    // by subtracting 2 hours. The backend stores and expects UTC.
+    // e.g. user picks 12:00 SAST → we send 10:00 UTC → backend stores 10:00 UTC
+    //      → toSASTTime() displays it back as 12:00 ✓
+    const utcStartTime = sastInputToUTC(bookingForm.date, bookingForm.time);
+
     const payload = {
       client_id: bookingForm.clientId,
-      start_time: startDateTime.toISOString(),
+      start_time: utcStartTime,
       services: bookingForm.selectedServices.map(s => ({ service_id: s.id })),
       agent_id: (() => {
         if (!bookingForm.technician || bookingForm.technician === "auto" || bookingForm.technician === "") return null;
@@ -297,7 +313,7 @@ export default function ReceptionistDashboard({ user, onLogout }) {
       const formatted = {
         id: data.id,
         start_time: data.start_time,
-        // ── FIX: display confirmed booking time in SAST ──
+        // Display confirmed booking time in SAST
         time: toSASTTime(data.start_time),
         hour: getSASTHour(data.start_time),
         client: data.client?.name || bookingForm.clientName,
@@ -309,7 +325,7 @@ export default function ReceptionistDashboard({ user, onLogout }) {
         totalDuration: data.services ? data.services.reduce((sum, s) => sum + (s.duration_minutes || 0), 0) : totalDuration,
         status: data.status || "confirmed",
       };
-      // ── FIX: group new booking under its SAST date ──
+      // Group new booking under its SAST date
       const sastDateKey = new Date(data.start_time).toLocaleDateString("en-CA", {
         timeZone: "Africa/Johannesburg",
       });
@@ -367,7 +383,9 @@ export default function ReceptionistDashboard({ user, onLogout }) {
       clientId: booking.clientId, clientName: booking.client,
       selectedServices: selected,
       technician: booking.technician === "Auto-Assigned" ? "auto" : booking.technician,
-      time: booking.time.slice(0, 5), date: selectedDateKey,
+      // booking.time is already SAST display (e.g. "12:00") — correct for the time input
+      time: booking.time.slice(0, 5),
+      date: selectedDateKey,
     });
     setShowBookingModal(true);
   };
@@ -764,7 +782,7 @@ export default function ReceptionistDashboard({ user, onLogout }) {
                     </select>
                   </div>
                   <div>
-                    <label className={S.label}>Time</label>
+                    <label className={S.label}>Time (SAST)</label>
                     <input type="time" required value={bookingForm.time}
                       onChange={e => setBookingForm(p => ({ ...p, time: e.target.value }))}
                       className={S.inputClass} />
