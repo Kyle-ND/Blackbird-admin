@@ -5,7 +5,12 @@ import {
   Scissors, ChevronDown,
 } from "lucide-react";
 
-const formatDateKey = (date) => date.toISOString().split("T")[0];
+const formatDateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 const fixDecimalResponse = (text) => {
   try { return JSON.parse(text); }
@@ -15,6 +20,28 @@ const fixDecimalResponse = (text) => {
       .replace(/Decimal\("([\d.]+)"\)/g, '"$1"');
     return JSON.parse(fixed);
   }
+};
+
+// ── TIMEZONE HELPER: get SAST hour integer from UTC string ──
+const getSASTHour = (utcString) => {
+  return parseInt(
+    new Date(utcString).toLocaleString("en-US", {
+      hour: "numeric",
+      hour12: false,
+      timeZone: "Africa/Johannesburg",
+    }),
+    10
+  );
+};
+
+// ── TIMEZONE HELPER: format UTC string as SAST time display ──
+const toSASTTime = (utcString) => {
+  return new Date(utcString).toLocaleTimeString("en-ZA", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Africa/Johannesburg",
+  });
 };
 
 // ─── Shared style tokens (mirror manager) ───────────────────────────────────
@@ -93,13 +120,19 @@ export default function ReceptionistDashboard({ user, onLogout }) {
           const data = fixDecimalResponse(text);
           if (Array.isArray(data)) {
             const grouped = data.reduce((acc, b) => {
-              const dateKey = new Date(b.start_time).toISOString().split("T")[0];
-              if (!acc[dateKey]) acc[dateKey] = [];
+              // ── FIX: group by SAST date, not UTC date ──
+              const sastDateKey = new Date(b.start_time).toLocaleDateString("en-CA", {
+                timeZone: "Africa/Johannesburg",
+              });
+              if (!acc[sastDateKey]) acc[sastDateKey] = [];
               const price = typeof b.total_price === "string" ? parseFloat(b.total_price) : b.total_price || 0;
-              acc[dateKey].push({
-                id: b.id, start_time: b.start_time,
-                time: new Date(b.start_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                hour: new Date(b.start_time).getHours(),
+              acc[sastDateKey].push({
+                id: b.id,
+                start_time: b.start_time,
+                // ── FIX: display time in SAST ──
+                time: toSASTTime(b.start_time),
+                // ── FIX: hour in SAST for schedule grouping ──
+                hour: getSASTHour(b.start_time),
                 client: b.client.name, clientId: b.client.id,
                 services: b.services.map(s => s.name),
                 technician: b.agent?.name || "Auto-Assigned",
@@ -231,7 +264,8 @@ export default function ReceptionistDashboard({ user, onLogout }) {
       return showToast("error", "Please select client, service(s), and time");
     }
     const token = localStorage.getItem("access_token");
-    const startDateTime = new Date(`${bookingForm.date}T${bookingForm.time}:00`);
+    // ── FIX: send time with +02:00 offset so backend stores correct UTC ──
+    const startDateTime = new Date(`${bookingForm.date}T${bookingForm.time}:00+02:00`);
     const payload = {
       client_id: bookingForm.clientId,
       start_time: startDateTime.toISOString(),
@@ -260,11 +294,12 @@ export default function ReceptionistDashboard({ user, onLogout }) {
       const text = await res.text();
       const data = fixDecimalResponse(text);
       if (!data || !data.id) { showToast("error", "Invalid response"); return; }
-      const formattedStart = new Date(data.start_time);
       const formatted = {
-        id: data.id, start_time: data.start_time,
-        time: formattedStart.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        hour: formattedStart.getHours(),
+        id: data.id,
+        start_time: data.start_time,
+        // ── FIX: display confirmed booking time in SAST ──
+        time: toSASTTime(data.start_time),
+        hour: getSASTHour(data.start_time),
         client: data.client?.name || bookingForm.clientName,
         clientId: data.client?.id || bookingForm.clientId,
         services: data.services ? data.services.map(s => s.name) : bookingForm.selectedServices.map(s => s.name),
@@ -274,9 +309,13 @@ export default function ReceptionistDashboard({ user, onLogout }) {
         totalDuration: data.services ? data.services.reduce((sum, s) => sum + (s.duration_minutes || 0), 0) : totalDuration,
         status: data.status || "confirmed",
       };
+      // ── FIX: group new booking under its SAST date ──
+      const sastDateKey = new Date(data.start_time).toLocaleDateString("en-CA", {
+        timeZone: "Africa/Johannesburg",
+      });
       setBookings(prev => {
-        const day = prev[bookingForm.date] || [];
-        return { ...prev, [bookingForm.date]: [...day, formatted].sort((a, b) => a.time.localeCompare(b.time)) };
+        const day = prev[sastDateKey] || [];
+        return { ...prev, [sastDateKey]: [...day, formatted].sort((a, b) => a.time.localeCompare(b.time)) };
       });
       setConfirmedBooking({ ...formatted, autoAssigned: !data.agent?.id });
       setShowConfirmation(true);
@@ -384,7 +423,7 @@ export default function ReceptionistDashboard({ user, onLogout }) {
               <div className="flex items-center gap-2 sm:gap-3">
                 <span className="text-sm text-[#6B5E50]/60 hidden lg:block">{user?.name}</span>
 
-                {/* New booking button (always visible) */}
+                {/* New booking button */}
                 <button onClick={() => setShowBookingModal(true)}
                   className="flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-[#985f99] text-white rounded-xl text-sm font-medium hover:bg-[#985f99]/90 transition-all shadow-sm">
                   <Plus className="w-4 h-4" />
@@ -430,7 +469,6 @@ export default function ReceptionistDashboard({ user, onLogout }) {
               <div className="flex items-center justify-between gap-4">
                 <h2 className="serif text-3xl sm:text-4xl text-[#985f99]">{viewLabel}</h2>
 
-                {/* Date nav (only in schedule/monthly) */}
                 {(viewMode === "schedule" || viewMode === "monthly") && (
                   <div className="flex items-center gap-2">
                     <button onClick={() => changeDate(-1)}
@@ -453,7 +491,6 @@ export default function ReceptionistDashboard({ user, onLogout }) {
             {/* ─ SCHEDULE ─ */}
             {viewMode === "schedule" && (
               <div>
-                {/* Tech filter */}
                 <div className="mb-5">
                   <select value={selectedTech} onChange={e => setSelectedTech(e.target.value)}
                     className="px-4 py-2.5 bg-white border border-[#D4AF87]/20 rounded-xl text-sm text-[#6B5E50] focus:outline-none focus:border-[#985f99]/40 shadow-sm transition-colors appearance-none">
@@ -624,7 +661,7 @@ export default function ReceptionistDashboard({ user, onLogout }) {
           <div className={S.modalOverlay}>
             <div className="bg-white border border-[#D4AF87]/20 rounded-3xl p-8 max-w-sm w-full shadow-2xl">
               <h3 className="serif text-2xl text-[#985f99] mb-6">Select Date</h3>
-              <input type="date" onChange={e => { setSelectedDate(new Date(e.target.value)); setShowDatePicker(false); }}
+              <input type="date" onChange={e => { setSelectedDate(new Date(e.target.value + "T12:00:00")); setShowDatePicker(false); }}
                 className={S.inputClass} />
               <button onClick={() => setShowDatePicker(false)} className={`mt-4 w-full ${S.btnSecondary}`}>Close</button>
             </div>
