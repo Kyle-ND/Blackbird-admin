@@ -1,1344 +1,301 @@
-import React, { useState, useEffect, useMemo } from "react";
-import {
-  Plus, CalendarDays, LogOut, Search, UserPlus, Trash2, Undo2,
-  X, Pencil, UserCog, Check, ChevronLeft, ChevronRight, Calendar,
-  Scissors, ChevronDown, Info, Save, Clock,
-} from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarDays, Calendar, Scissors, UserCog, Users, Undo2, Plus, CalendarX2, Wallet, Clock, Users2 } from "lucide-react";
+import { api, money, sastDateKeyOf, sastHourOf, shiftDateKey, toSastDateKey, toSastTime } from "../lib/api";
+import { S, Modal, Toast, useToast, ListSkeleton, EmptyState, STATUS_LABEL } from "./shared/ui";
+import TopBar from "./shared/TopBar";
+import PageHeader from "./shared/PageHeader";
+import BookingCard from "./shared/BookingCard";
+import ServicesManager from "./shared/ServicesManager";
+import TechniciansManager from "./shared/TechniciansManager";
+import BookingModal from "./shared/BookingModal";
+import ClientsPanel from "./shared/ClientsPanel";
+import Avatar from "./shared/Avatar";
 
-const formatDateKey = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+const INACTIVE = ["cancelled", "late_cancel"];
+const BLOCKING = ["pending", "confirmed", "completed", "no_show"];
+
+const monthRange = (dateKey) => {
+  const [y, m] = dateKey.split("-").map(Number);
+  const first = `${y}-${String(m).padStart(2, "0")}-01`;
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return [first, `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`];
 };
 
-const fixDecimalResponse = (text) => {
-  try { return JSON.parse(text); }
-  catch {
-    const fixed = text
-      .replace(/Decimal\('([\d.]+)'\)/g, '"$1"')
-      .replace(/Decimal\("([\d.]+)"\)/g, '"$1"');
-    return JSON.parse(fixed);
-  }
+const SUBTITLES = {
+  clients: "Profiles, notes, history and every booking.",
+  services: "Menu, prices, categories and promotions shown on the website.",
+  agents: "Staff accounts, the services they perform, working hours and leave.",
 };
 
-// ── TIMEZONE HELPER: parse any date string safely as SAST local naive time ──
-const parseToSASTDate = (dateString) => {
-  if (!dateString) return new Date();
-  const cleanString = dateString.replace(/Z$/, "").replace(/(\+[0-9]{2}:[0-9]{2}|-[0-9]{2}:[0-9]{2})$/, "");
-  return new Date(cleanString.includes("T")
-    ? `${cleanString}+02:00`
-    : `${cleanString}T00:00:00+02:00`
-  );
-};
-
-// ── TIMEZONE HELPER: get SAST hour integer from UTC/ISO string ──
-const getSASTHour = (dateString) => {
-  return parseInt(
-    parseToSASTDate(dateString).toLocaleString("en-US", {
-      hour: "numeric",
-      hour12: false,
-      timeZone: "Africa/Johannesburg",
-    }),
-    10
-  );
-};
-
-// ── TIMEZONE HELPER: format UTC/ISO string as SAST time display ──
-const toSASTTime = (dateString) => {
-  return parseToSASTDate(dateString).toLocaleTimeString("en-ZA", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Africa/Johannesburg",
-  });
-};
-
-// ── TIMEZONE HELPER: convert SAST date+time input to UTC ISO string ──
-const sastInputToUTC = (dateStr, timeStr) => {
-  const sastDateTime = parseToSASTDate(`${dateStr}T${timeStr}:00`);
-  return sastDateTime.toISOString();
-};
-
-// ─── Shared style tokens ───────────────────────────────────
-const S = {
-  card: "bg-white border border-[#D4AF87]/20 rounded-2xl shadow-sm",
-  inputClass: "w-full px-4 py-3 rounded-xl bg-[#F8F6F2] border border-[#D4AF87]/30 text-[#2d1f2d] placeholder-[#6B5E50]/40 focus:outline-none focus:border-[#985f99]/40 transition-colors text-sm",
-  btnPrimary: "flex-1 py-3 bg-[#985f99] hover:bg-[#985f99]/90 text-white rounded-xl font-medium transition-colors text-sm",
-  btnSecondary: "flex-1 py-3 bg-[#F8F6F2] hover:bg-[#f0ebe3] border border-[#D4AF87]/30 text-[#6B5E50] rounded-xl font-medium transition-colors text-sm",
-  modalOverlay: "fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[130] p-4",
-  modalBox: "bg-white border border-[#D4AF87]/20 rounded-3xl p-8 w-full shadow-2xl max-h-[90vh] overflow-y-auto",
-  label: "block text-xs font-semibold tracking-widest uppercase text-[#6B5E50]/50 mb-2",
-  inlineInput: "w-full px-3 py-2.5 rounded-xl bg-[#F8F6F2] border border-[#D4AF87]/30 text-[#2d1f2d] placeholder-[#6B5E50]/40 focus:outline-none focus:border-[#985f99]/50 focus:ring-2 focus:ring-[#985f99]/10 transition-all text-sm",
-};
-
-// ── CLIENT DETAIL MODAL ──────────────────────────────────────────────────────
-function ClientDetailModal({ booking, clients, onClose }) {
-  const client = clients.find(c => c.id === booking.clientId);
-  const rows = [
-    { label: "Name",  value: booking.client },
-    { label: "Phone", value: client?.phone || "—" },
-    { label: "Email", value: client?.email || "—" },
-  ];
-  return (
-    <div className={S.modalOverlay}>
-      <div className="bg-white border border-[#D4AF87]/20 rounded-3xl p-8 max-w-sm w-full shadow-2xl">
-        {/* header */}
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="serif text-2xl text-[#985f99]">Client Details</h3>
-          <button onClick={onClose}
-            className="p-2 rounded-xl hover:bg-[#F8F6F2] text-[#6B5E50] transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* avatar initial */}
-        <div className="w-14 h-14 rounded-full bg-[#985f99]/10 border border-[#985f99]/20 flex items-center justify-center mb-6 mx-auto">
-          <span className="serif text-2xl text-[#985f99]">
-            {booking.client.charAt(0).toUpperCase()}
-          </span>
-        </div>
-
-        {/* detail rows */}
-        <div className="space-y-1">
-          {rows.map(({ label, value }) => (
-            <div key={label}
-              className="flex justify-between items-start py-3 border-b border-[#D4AF87]/10 last:border-0">
-              <span className="text-xs font-semibold tracking-widest uppercase text-[#6B5E50]/50 pt-0.5">
-                {label}
-              </span>
-              <span className="text-sm font-medium text-[#985f99] text-right max-w-[60%] break-all">
-                {value}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        <button onClick={onClose} className={`mt-8 w-full ${S.btnPrimary}`}>Close</button>
-      </div>
-    </div>
-  );
-}
-
-export default function ReceptionistDashboard({ user, onLogout }) {
-  const [selectedDate, setSelectedDate] = useState(new Date());
+export default function ReceptionistDashboard({ user, onLogout, onSwitchView }) {
+  const [viewMode, setViewMode] = useState("schedule");
+  const [dateKey, setDateKey] = useState(() => toSastDateKey());
   const [selectedTech, setSelectedTech] = useState("");
-  const [availableTechs, setAvailableTechs] = useState([]);
+  const [staff, setStaff] = useState([]);
   const [services, setServices] = useState([]);
   const [clients, setClients] = useState([]);
-  const [bookings, setBookings] = useState({});
+  const [bookingsByDay, setBookingsByDay] = useState({});
   const [loading, setLoading] = useState(true);
+  const [loadingMonth, setLoadingMonth] = useState(false);
   const [error, setError] = useState("");
-  const [toast, setToast] = useState(null);
-  const [viewMode, setViewMode] = useState("schedule");
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [toast, showToast, clearToast] = useToast();
+  const [bookingModal, setBookingModal] = useState(null);
+  const [clientDetail, setClientDetail] = useState(null);
+  const [undo, setUndo] = useState(null);
+  const [me, setMe] = useState(null);
 
-  // Edit states
-  const [editingServiceId, setEditingServiceId] = useState(null);
-  const [editingServiceData, setEditingServiceData] = useState({});
-  const [editingTechId, setEditingTechId] = useState(null);
-  const [editingTechData, setEditingTechData] = useState({});
-  const [savingService, setSavingService] = useState(false);
-  const [savingTech, setSavingTech] = useState(false);
-
-  // Modals
-  const [showBookingModal, setShowBookingModal] = useState(false);
-  const [showClientModal, setShowClientModal] = useState(false);
-  const [showTechModal, setShowTechModal] = useState(false);
-  const [showServiceModal, setShowServiceModal] = useState(false);
-  const [showConfirmation, setShowConfirmation] = useState(false);
-  const [showDatePicker, setShowDatePicker] = useState(false);
-  const [confirmedBooking, setConfirmedBooking] = useState(null);
-  const [deletedBooking, setDeletedBooking] = useState(null);
-  const [undoTimeout, setUndoTimeout] = useState(null);
-
-  // ── Client detail modal state ──
-  const [clientDetailBooking, setClientDetailBooking] = useState(null);
-
-  // Form states
-  const [clientSearch, setClientSearch] = useState("");
-  const [newClient, setNewClient] = useState({ name: "", phone: "", email: "" });
-  const [newTech, setNewTech] = useState({ name: "", email: "", password: "", specialization: "" });
-  const [newService, setNewService] = useState({ name: "", price: "", duration: "", category: "" });
-  const [bookingForm, setBookingForm] = useState({
-    clientId: null, clientName: "", selectedServices: [],
-    technician: "", time: "", date: formatDateKey(new Date()),
-  });
-  const [editingBooking, setEditingBooking] = useState(null);
-
+  const todayKey = toSastDateKey();
   const navItems = [
     { mode: "schedule", label: "Schedule", icon: CalendarDays },
     { mode: "monthly", label: "Monthly", icon: Calendar },
+    { mode: "clients", label: "Clients", icon: Users },
     { mode: "services", label: "Services", icon: Scissors },
     { mode: "agents", label: "Technicians", icon: UserCog },
   ];
 
-
-
-  useEffect(() => {
-    const fetchData = async () => {
-      const token = localStorage.getItem("access_token");
-      if (!token) { setError("No authentication token."); setLoading(false); return; }
-      try {
-        const [sRes, aRes, cRes, bRes] = await Promise.all([
-          fetch("/proxy-api/services/", { headers: { Authorization: `Bearer ${token}` } }),
-          fetch("/proxy-api/agents/", { headers: { Authorization: `Bearer ${token}` } }),
-          fetch("/proxy-api/clients/", { headers: { Authorization: `Bearer ${token}` } }),
-          fetch("/proxy-api/bookings/", { headers: { Authorization: `Bearer ${token}` } }),
-        ]);
-        if (sRes.ok) {
-          const d = await sRes.json();
-          setServices(d.map(s => ({ id: s.id, name: s.name, price: parseFloat(s.price), duration: s.duration_minutes, category: s.category || "General" })));
-        }
-        if (aRes.ok) {
-          const d = await aRes.json();
-          setAvailableTechs(d.map(a => ({ ...a, active_status: a.active_status ?? true })));
-        }
-        if (cRes.ok) setClients(await cRes.json());
-        if (bRes.ok) {
-          const text = await bRes.text();
-          const data = fixDecimalResponse(text);
-          console.log("Raw bookings from API:", data);
-          if (Array.isArray(data)) {
-            const grouped = data.reduce((acc, b) => {
-              const sastDateKey = parseToSASTDate(b.start_time).toLocaleDateString("en-CA", {
-                timeZone: "Africa/Johannesburg",
-              });
-              if (!acc[sastDateKey]) acc[sastDateKey] = [];
-              const price = typeof b.total_price === "string" ? parseFloat(b.total_price) : b.total_price || 0;
-              acc[sastDateKey].push({
-                id: b.id,
-                start_time: b.start_time,
-                time: toSASTTime(b.start_time),
-                hour: getSASTHour(b.start_time),
-                client: b.client.name, clientId: b.client.id,
-                services: b.services.map(s => s.name),
-                technician: b.agent?.name || "Auto-Assigned",
-                technicianId: b.agent?.id,
-                totalPrice: price,
-                totalDuration: b.services.reduce((sum, s) => sum + s.duration_minutes, 0),
-                status: b.status,
-              });
-              return acc;
-            }, {});
-            setBookings(grouped);
-          }
-        }
-      } catch (err) {
-        setError(err.message || "Failed to load data");
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
+  const loadCore = useCallback(async () => {
+    try {
+      const [a, s, c, m] = await Promise.all([api("/agents/"), api("/services/"), api("/clients/"), api("/agents/me")]);
+      setStaff(a); setServices(s); setClients(c); setMe(m);
+      setError("");
+    } catch (err) { setError(err.message); }
   }, []);
 
-  const filteredClients = useMemo(() => {
-    if (!clientSearch.trim()) return [];
-    return clients.filter(c =>
-      c.name.toLowerCase().includes(clientSearch.toLowerCase()) || c.phone?.includes(clientSearch)
-    );
-  }, [clientSearch, clients]);
-
-  const totalPrice = bookingForm.selectedServices.reduce((sum, s) => sum + s.price, 0);
-  const totalDuration = bookingForm.selectedServices.reduce((sum, s) => sum + s.duration, 0);
-  const selectedDateKey = formatDateKey(selectedDate);
-
-  const selectedBookings = useMemo(() => {
-    return (bookings[selectedDateKey] || [])
-      .filter(b => !selectedTech || b.technician === selectedTech)
-      .sort((a, b) => a.time.localeCompare(b.time));
-  }, [bookings, selectedDateKey, selectedTech]);
-
-  const groupedServices = useMemo(() => {
-    return services.reduce((acc, s) => {
-      const cat = s.category || "General";
-      if (!acc[cat]) acc[cat] = [];
-      acc[cat].push(s);
-      return acc;
-    }, {});
-  }, [services]);
-
-  const hours = Array.from({ length: 12 }, (_, i) => i + 9);
-
-  const showToast = (type, message) => {
-    setToast({ type, message });
-    setTimeout(() => setToast(null), 4000);
-  };
-
-  const formatCurrency = (value) => {
-    const num = parseFloat(value);
-    return isNaN(num) ? "0.00" : num.toFixed(2);
-  };
-
-  const changeDate = (delta) => {
-    const d = new Date(selectedDate);
-    d.setDate(d.getDate() + delta);
-    setSelectedDate(d);
-    setBookingForm(p => ({ ...p, date: formatDateKey(d) }));
-  };
-
-  const resetForm = () => {
-    setBookingForm({ clientId: null, clientName: "", selectedServices: [], technician: "", time: "", date: formatDateKey(selectedDate) });
-    setEditingBooking(null);
-    setClientSearch("");
-  };
-
-  const selectClient = (client) => {
-    setBookingForm(p => ({ ...p, clientId: client.id, clientName: client.name }));
-    setClientSearch("");
-  };
-
-  const toggleService = (service) => {
-    setBookingForm(p => ({
-      ...p,
-      selectedServices: p.selectedServices.some(s => s.id === service.id)
-        ? p.selectedServices.filter(s => s.id !== service.id)
-        : [...p.selectedServices, service],
-    }));
-  };
-
-  // ── Service editing ──────────────────────────────────────────────────────
-  const startEditService = (service) => {
-    setEditingServiceId(service.id);
-    setEditingServiceData({ name: service.name, price: service.price, duration: service.duration, category: service.category });
-  };
-
-  const cancelEditService = () => {
-    setEditingServiceId(null);
-    setEditingServiceData({});
-  };
-
-  const saveService = async (serviceId) => {
-    const { name, price, duration, category } = editingServiceData;
-    if (!name?.trim()) return showToast("error", "Service name is required");
-    const parsedPrice = parseFloat(price);
-    const parsedDuration = parseInt(duration, 10);
-    if (isNaN(parsedPrice) || parsedPrice < 0) return showToast("error", "Invalid price");
-    if (isNaN(parsedDuration) || parsedDuration < 1) return showToast("error", "Invalid duration");
-
-    setSavingService(true);
-    const token = localStorage.getItem("access_token");
+  const loadMonth = useCallback(async (key) => {
+    const [from, to] = monthRange(key);
+    setLoadingMonth(true);
     try {
-      const res = await fetch(`/proxy-api/services/${serviceId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: name.trim(), price: parsedPrice, duration_minutes: parsedDuration, category: category?.trim() || "General" }),
+      const data = await api(`/bookings/?date_from=${from}&date_to=${to}&limit=2000`);
+      const grouped = {};
+      data.forEach((b) => { const k = sastDateKeyOf(b.start_time); (grouped[k] = grouped[k] || []).push(b); });
+      Object.values(grouped).forEach((list) => list.sort((a, b) => a.start_time.localeCompare(b.start_time)));
+      setBookingsByDay((prev) => {
+        const next = { ...prev };
+        Object.keys(next).forEach((k) => { if (k >= from && k <= to) delete next[k]; });
+        return { ...next, ...grouped };
       });
-      if (!res.ok) {
-        const e = await res.json();
-        showToast("error", e.detail || "Failed to update service");
-        return;
-      }
-      setServices(prev => prev.map(s => s.id === serviceId
-        ? { ...s, name: name.trim(), price: parsedPrice, duration: parsedDuration, category: category?.trim() || "General" }
-        : s
-      ));
-      setEditingServiceId(null);
-      setEditingServiceData({});
-      showToast("success", "Service updated");
-    } catch {
-      showToast("error", "Network error");
-    } finally {
-      setSavingService(false);
-    }
-  };
+    } catch (err) { showToast("error", err.message); } finally { setLoadingMonth(false); }
+  }, [showToast]);
 
-  const addService = async () => {
-    const { name, price, duration, category } = newService;
-    if (!name.trim()) return showToast("error", "Service name is required");
-    const parsedPrice = parseFloat(price);
-    const parsedDuration = parseInt(duration, 10);
-    if (isNaN(parsedPrice) || parsedPrice < 0) return showToast("error", "Invalid price");
-    if (isNaN(parsedDuration) || parsedDuration < 1) return showToast("error", "Invalid duration");
+  useEffect(() => {
+    (async () => { setLoading(true); await Promise.all([loadCore(), loadMonth(dateKey)]); setLoading(false); })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => { loadMonth(dateKey); }, [dateKey.slice(0, 7), loadMonth]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const token = localStorage.getItem("access_token");
+  const refreshBookings = () => loadMonth(dateKey);
+
+  const dayBookings = useMemo(() => (bookingsByDay[dateKey] || []).filter((b) => !selectedTech || b.agent?.id === selectedTech), [bookingsByDay, dateKey, selectedTech]);
+  const activeDay = dayBookings.filter((b) => !INACTIVE.includes(b.status));
+  const hours = [...new Set(activeDay.map((b) => sastHourOf(b.start_time)))].sort((a, b) => a - b);
+  const daySummary = useMemo(() => {
+    const live = activeDay.filter((b) => BLOCKING.includes(b.status));
+    const revenue = live.filter((b) => ["confirmed", "completed"].includes(b.status)).reduce((s, b) => s + parseFloat(b.total_price || 0), 0);
+    const minutes = live.reduce((s, b) => s + Math.round((new Date(b.end_time) - new Date(b.start_time)) / 60000), 0);
+    const techs = new Set(live.map((b) => b.agent?.id).filter(Boolean)).size;
+    return { count: live.length, revenue, hours: Math.round(minutes / 6) / 10, techs };
+  }, [activeDay]);
+
+  const setStatus = async (booking, status, { allowUndo = false } = {}) => {
     try {
-      const res = await fetch("/proxy-api/services/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: name.trim(), price: parsedPrice, duration_minutes: parsedDuration, category: category?.trim() || "General" }),
-      });
-      if (!res.ok) {
-        const e = await res.json();
-        showToast("error", e.detail || "Failed to add service");
-        return;
-      }
-      const created = await res.json();
-      setServices(prev => [...prev, { id: created.id, name: created.name, price: parseFloat(created.price), duration: created.duration_minutes, category: created.category || "General" }]);
-      setNewService({ name: "", price: "", duration: "", category: "" });
-      setShowServiceModal(false);
-      showToast("success", "Service added");
-    } catch {
-      showToast("error", "Network error");
-    }
-  };
-
-  // ── Technician editing ───────────────────────────────────────────────────
-  const startEditTech = (tech) => {
-    setEditingTechId(tech.id);
-    setEditingTechData({ name: tech.name, specialization: tech.specialization || "", active_status: tech.active_status });
-  };
-
-  const cancelEditTech = () => {
-    setEditingTechId(null);
-    setEditingTechData({});
-  };
-
-  const saveTech = async (techId) => {
-    const { name, specialization, active_status } = editingTechData;
-    if (!name?.trim()) return showToast("error", "Technician name is required");
-
-    setSavingTech(true);
-    const token = localStorage.getItem("access_token");
-    try {
-      const res = await fetch(`/proxy-api/agents/${techId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: name.trim(), specialization: specialization?.trim() || null, active_status }),
-      });
-      if (!res.ok) {
-        const e = await res.json();
-        showToast("error", e.detail || "Failed to update technician");
-        return;
-      }
-      setAvailableTechs(prev => prev.map(t => t.id === techId
-        ? { ...t, name: name.trim(), specialization: specialization?.trim() || null, active_status }
-        : t
-      ));
-      setEditingTechId(null);
-      setEditingTechData({});
-      showToast("success", "Technician updated");
-    } catch {
-      showToast("error", "Network error");
-    } finally {
-      setSavingTech(false);
-    }
-  };
-
-
-
-  // ── Toggle tech active status ────────────────────────────────────────────
-  const toggleTechStatus = async (tech) => {
-    const token = localStorage.getItem("access_token");
-    try {
-      const res = await fetch(`/proxy-api/agents/${tech.id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ active_status: !tech.active_status }) });
-      if (!res.ok) { showToast("error", "Failed to update status"); return; }
-      const updated = await res.json();
-      setAvailableTechs(prev => prev.map(t => t.id === updated.id ? updated : t));
-      showToast("success", `Technician ${updated.active_status ? "activated" : "deactivated"}`);
-    } catch { showToast("error", "Failed to update status"); }
-  };
-
-  // ── Existing booking handlers ────────────────────────────────────────────
-  const addClient = async () => {
-    if (!newClient.name.trim() || !newClient.phone.trim()) return showToast("error", "Name and phone required");
-    const token = localStorage.getItem("access_token");
-    try {
-      const res = await fetch("/proxy-api/clients/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: newClient.name.trim(), phone: newClient.phone.trim(), email: newClient.email.trim() || null }),
-      });
-      if (res.ok) {
-        const client = await res.json();
-        setClients(p => [...p, client]);
-        setBookingForm(p => ({ ...p, clientId: client.id, clientName: client.name }));
-        setNewClient({ name: "", phone: "", email: "" });
-        setShowClientModal(false);
-        setClientSearch("");
-        showToast("success", "Client added");
+      await api(`/bookings/${booking.id}`, { method: "PATCH", body: { status } });
+      await refreshBookings();
+      if (allowUndo) {
+        setUndo({ booking, previous: booking.status });
+        setTimeout(() => setUndo((u) => (u && u.booking.id === booking.id ? null : u)), 6000);
+        showToast("info", `Booking ${STATUS_LABEL[status].toLowerCase()} — the client and technician have been emailed`);
       } else {
-        const err = await res.json();
-        showToast("error", err.detail || "Failed to add client");
+        showToast("success", `Marked as ${STATUS_LABEL[status].toLowerCase()}`);
       }
-    } catch { showToast("error", "Network error"); }
+    } catch (err) { showToast("error", err.message); }
   };
 
-  const addTechnician = async () => {
-    const { name, email, password, specialization } = newTech;
-    if (!name.trim() || !email.trim() || !password.trim()) return showToast("error", "Name, email and password required");
-    const token = localStorage.getItem("access_token");
+  const undoCancel = async () => {
+    if (!undo) return;
     try {
-      const res = await fetch("/proxy-api/agents/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: name.trim(), email: email.trim(), password, specialization: specialization.trim() || null, active_status: true, role: "agent" }),
-      });
-      if (!res.ok) { const e = await res.json(); showToast("error", e.detail || "Failed to add technician"); return; }
-      const agent = await res.json();
-      setAvailableTechs(p => [...p, { ...agent, active_status: true }]);
-      setNewTech({ name: "", email: "", password: "", specialization: "" });
-      setShowTechModal(false);
-      showToast("success", "Technician added");
-    } catch { showToast("error", "Network error"); }
+      await api(`/bookings/${undo.booking.id}`, { method: "PATCH", body: { status: undo.previous || "confirmed" } });
+      setUndo(null);
+      await refreshBookings();
+      showToast("success", "Booking restored");
+    } catch (err) { showToast("error", err.message); }
   };
 
-  const confirmBooking = async (e) => {
-    e.preventDefault();
-    if (!bookingForm.clientId || bookingForm.selectedServices.length === 0 || !bookingForm.time) {
-      return showToast("error", "Please select client, service(s), and time");
-    }
-    const token = localStorage.getItem("access_token");
-
-    const utcStartTime = sastInputToUTC(bookingForm.date, bookingForm.time);
-
-    const payload = {
-      client_id: bookingForm.clientId,
-      start_time: utcStartTime,
-      services: bookingForm.selectedServices.map(s => ({ service_id: s.id })),
-      agent_id: (() => {
-        if (!bookingForm.technician || bookingForm.technician === "auto" || bookingForm.technician === "") return null;
-        const tech = availableTechs.find(t => t.name === bookingForm.technician);
-        return tech ? tech.id : null;
-      })(),
-    };
-    try {
-      const res = await fetch("/proxy-api/bookings/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        let errDetail;
-        try { const e = fixDecimalResponse(text); errDetail = e.detail || e.message || "Unknown error"; } catch { errDetail = text || "Failed"; }
-        if (errDetail.includes("not available")) showToast("error", "Agent not available at this time.");
-        else if (errDetail.includes("No agents")) showToast("error", "No agents available. Try a different time.");
-        else showToast("error", errDetail);
-        return;
-      }
-      const text = await res.text();
-      const data = fixDecimalResponse(text);
-      if (!data || !data.id) { showToast("error", "Invalid response"); return; }
-
-      const clientRecord = clients.find(c => c.id === (data.client?.id || bookingForm.clientId));
-
-      const formatted = {
-        id: data.id,
-        start_time: data.start_time,
-        time: toSASTTime(data.start_time),
-        hour: getSASTHour(data.start_time),
-        client: data.client?.name || bookingForm.clientName,
-        clientId: data.client?.id || bookingForm.clientId,
-        clientPhone: clientRecord?.phone || data.client?.phone || null,
-        clientEmail: clientRecord?.email || data.client?.email || null,
-        services: data.services ? data.services.map(s => s.name) : bookingForm.selectedServices.map(s => s.name),
-        technician: data.agent?.name || "Auto-Assigned",
-        technicianId: data.agent?.id,
-        totalPrice: typeof data.total_price === "string" ? parseFloat(data.total_price) : data.total_price || 0,
-        totalDuration: data.services ? data.services.reduce((sum, s) => sum + (s.duration_minutes || 0), 0) : totalDuration,
-        status: data.status || "confirmed",
-      };
-
-      const sastDateKey = new Date(data.start_time).toLocaleDateString("en-CA", {
-        timeZone: "Africa/Johannesburg",
-      });
-      setBookings(prev => {
-        const day = prev[sastDateKey] || [];
-        return { ...prev, [sastDateKey]: [...day, formatted].sort((a, b) => a.time.localeCompare(b.time)) };
-      });
-      setConfirmedBooking({ ...formatted, autoAssigned: !data.agent?.id });
-      setShowConfirmation(true);
-      setShowBookingModal(false);
-      resetForm();
-      showToast("success", "Booking confirmed");
-    } catch (err) { showToast("error", `Booking failed: ${err.message}`); }
+  const stepDate = (delta) => {
+    if (viewMode === "monthly") {
+      const [y, m] = dateKey.split("-").map(Number);
+      setDateKey(new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 10));
+    } else setDateKey(shiftDateKey(dateKey, delta));
   };
 
-  const deleteBooking = async (booking) => {
-    const bookingDateKey = Object.entries(bookings).find(([, list]) => list.some(b => b.id === booking.id))?.[0];
-    if (!bookingDateKey) return showToast("error", "Booking not found");
-    const token = localStorage.getItem("access_token");
-    try {
-      const res = await fetch(`/proxy-api/bookings/${booking.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ status: "cancelled" }),
-      });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || "Failed"); }
-      setDeletedBooking({ booking, dateKey: bookingDateKey });
-      setBookings(prev => ({ ...prev, [bookingDateKey]: prev[bookingDateKey].map(b => b.id === booking.id ? { ...b, status: "cancelled" } : b) }));
-      clearTimeout(undoTimeout);
-      setUndoTimeout(setTimeout(() => setDeletedBooking(null), 5000));
-      showToast("info", "Booking cancelled");
-    } catch (err) { showToast("error", `Failed: ${err.message}`); }
-  };
-
-  const undoDelete = async () => {
-    if (!deletedBooking) return;
-    const { booking, dateKey } = deletedBooking;
-    const token = localStorage.getItem("access_token");
-    try {
-      await fetch(`/proxy-api/bookings/${booking.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ status: "confirmed" }),
-      });
-      setBookings(prev => ({ ...prev, [dateKey]: prev[dateKey].map(b => b.id === booking.id ? { ...b, status: "confirmed" } : b) }));
-      setDeletedBooking(null);
-      showToast("success", "Undo successful");
-    } catch { showToast("error", "Failed to undo"); }
-  };
-
-  const openEdit = (booking) => {
-    const selected = services.filter(s => booking.services.includes(s.name));
-    setEditingBooking(booking);
-    setBookingForm({
-      clientId: booking.clientId, clientName: booking.client,
-      selectedServices: selected,
-      technician: booking.technician === "Auto-Assigned" ? "auto" : booking.technician,
-      time: booking.time.slice(0, 5), date: selectedDateKey,
-    });
-    setShowBookingModal(true);
-  };
-
-  // ── Reusable booking action buttons: Info · Edit · Cancel ────────────────────
-  const BookingActions = ({ booking }) => (
-    <div className="flex gap-2">
-      <button
-        onClick={() => setClientDetailBooking(booking)}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-[#D4AF87]/10 border border-[#D4AF87]/30 rounded-lg text-xs font-medium text-[#6B5E50] hover:bg-[#D4AF87]/20 transition-colors"
-        title="Client details"
-      >
-        <Info className="w-3.5 h-3.5" />
-      </button>
-      <button
-        onClick={() => openEdit(booking)}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-[#985f99]/10 border border-[#985f99]/20 rounded-lg text-xs font-medium text-[#985f99] hover:bg-[#985f99]/20 transition-colors"
-      >
-        <Pencil className="w-3.5 h-3.5" /> Edit
-      </button>
-      <button
-        onClick={() => deleteBooking(booking)}
-        className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200/60 rounded-lg text-xs font-medium text-red-500 hover:bg-red-100 transition-colors"
-      >
-        <Trash2 className="w-3.5 h-3.5" /> Cancel
-      </button>
-    </div>
+  const techFilter = (
+    <select value={selectedTech} onChange={(e) => setSelectedTech(e.target.value)} data-testid="tech-filter" aria-label="Filter by technician"
+      className="bb-input !w-auto !py-2.5 pr-9 bg-white shadow-sm">
+      <option value="">All technicians</option>
+      {staff.filter((t) => t.role === "agent" || t.service_ids?.length).map((t) => <option key={t.id} value={t.id}>{t.name}{t.active_status ? "" : " (inactive)"}</option>)}
+    </select>
   );
 
-  if (loading) return (
-    <div className="min-h-screen bg-[#F8F6F2] flex items-center justify-center">
-      <p className="text-xl text-[#985f99]/50">Loading...</p>
-    </div>
-  );
-  if (error) return (
-    <div className="min-h-screen bg-[#F8F6F2] flex items-center justify-center">
-      <p className="text-red-500 bg-white px-8 py-5 rounded-2xl shadow">{error}</p>
-    </div>
-  );
-
-  const viewLabel = navItems.find(n => n.mode === viewMode)?.label;
-
-  // Modal style constants (matching manager)
-  const modalOverlay = "fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[130] p-4";
-  const modalBox = "bg-white border border-[#D4AF87]/20 rounded-3xl p-8 max-w-md w-full shadow-2xl";
-  const inputClass = "w-full mb-4 px-4 py-3 rounded-xl bg-[#F8F6F2] border border-[#D4AF87]/30 text-[#2d1f2d] placeholder-[#6B5E50]/40 focus:outline-none focus:border-[#985f99]/40 transition-colors text-sm";
-  const btnPrimary = "flex-1 py-3 bg-[#985f99] hover:bg-[#985f99]/90 text-white rounded-xl font-medium transition-colors text-sm";
-  const btnSecondary = "flex-1 py-3 bg-[#F8F6F2] hover:bg-[#f0ebe3] border border-[#D4AF87]/30 text-[#6B5E50] rounded-xl font-medium transition-colors text-sm";
+  if (loading) {
+    return (
+      <div className="min-h-screen pt-28 px-6 max-w-7xl mx-auto">
+        <div className="bb-skeleton h-14 w-full mb-8" /><div className="bb-skeleton h-10 w-72 mb-6" /><ListSkeleton rows={3} height="h-24" />
+      </div>
+    );
+  }
 
   return (
-    <>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
-      <style>{`
-        body { background: #F8F6F2; }
-        .stat-card { background: linear-gradient(135deg, rgba(255,255,255,0.95) 0%, rgba(248,246,242,0.8) 100%); }
-        .glow-dot { box-shadow: 0 0 8px currentColor; }
-        * { font-family: 'DM Sans', sans-serif; }
-        .serif { font-family: 'DM Serif Display', serif; }
-        .edit-card { animation: slideDown 0.2s ease-out; }
-        @keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
-        .toggle-pill { position: relative; display: inline-flex; align-items: center; width: 44px; height: 24px; border-radius: 99px; cursor: pointer; transition: background 0.25s ease; flex-shrink: 0; }
-        .toggle-pill .knob { position: absolute; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: white; transition: transform 0.25s ease; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
-        .toggle-pill.on { background: #985f99; }
-        .toggle-pill.off { background: #ccc; }
-        .toggle-pill.on .knob { transform: translateX(20px); }
-        .service-row:hover .edit-trigger, .tech-row:hover .edit-trigger { opacity: 1; }
-        .edit-trigger { opacity: 0.6; transition: opacity 0.2s; }
-      `}</style>
+    <div className="min-h-screen text-ink">
+      <TopBar area="Front desk" navItems={navItems} viewMode={viewMode} onNavigate={setViewMode} user={user} photoUrl={me?.photo_url}
+        onLogout={onLogout} onNewBooking={() => setBookingModal({})} onSwitchView={onSwitchView} switchLabel="Manager view" />
 
-      <div className="min-h-screen bg-[#F8F6F2] text-[#2d1f2d]">
+      <main className="pt-24 sm:pt-28 px-4 sm:px-6 pb-16">
+        <div className="max-w-7xl mx-auto">
+          <PageHeader
+            title={navItems.find((n) => n.mode === viewMode)?.label}
+            subtitle={SUBTITLES[viewMode]}
+            dateKey={viewMode === "schedule" || viewMode === "monthly" ? dateKey : null}
+            onDateChange={setDateKey}
+            onStep={stepDate}
+            stepLabel={viewMode === "monthly" ? "month" : "day"}
+            right={viewMode === "schedule" || viewMode === "monthly" ? techFilter : null}
+          />
 
-        {/* ── NAV ── */}
-        <header className="fixed top-0 left-0 right-0 z-[100]">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4 sm:pt-5 pb-3">
-            <div className="flex items-center justify-between bg-white/90 backdrop-blur-2xl border border-[#D4AF87]/20 rounded-2xl px-4 sm:px-6 py-3 sm:py-4 shadow-lg">
+          {error && <div role="alert" className="mb-6 bg-berry/10 border border-berry/25 text-berry rounded-2xl p-4 text-sm flex justify-between"><span>{error}</span><button onClick={loadCore} className="underline">Retry</button></div>}
 
-              <div className="flex items-center gap-2 sm:gap-3">
-                <h1 className="serif text-xl sm:text-2xl text-[#985f99] tracking-tight">blackbird</h1>
-                <span className="hidden sm:block text-[10px] tracking-[4px] text-[#6B5E50] uppercase font-medium mt-0.5">Spa</span>
-              </div>
-
-              <nav className="hidden md:flex items-center gap-1">
-                {navItems.map(({ mode, label }) => (
-                  <button key={mode} onClick={() => setViewMode(mode)}
-                    className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${viewMode === mode ? "bg-[#985f99]/15 text-[#985f99] border border-[#985f99]/20" : "text-[#6B5E50] hover:text-[#985f99] hover:bg-[#985f99]/5"}`}>
-                    {label}
-                  </button>
-                ))}
-              </nav>
-
-              <div className="flex items-center gap-2 sm:gap-3">
-                <span className="text-sm text-[#6B5E50]/60 hidden lg:block">{user?.name}</span>
-
-                <button onClick={() => setShowBookingModal(true)}
-                  className="flex items-center gap-1.5 px-3 sm:px-4 py-2 bg-[#985f99] text-white rounded-xl text-sm font-medium hover:bg-[#985f99]/90 transition-all shadow-sm">
-                  <Plus className="w-4 h-4" />
-                  <span className="hidden sm:inline">New Booking</span>
-                </button>
-
-                <div className="relative md:hidden">
-                  <button onClick={() => setIsMenuOpen(!isMenuOpen)}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-[#985f99]/5 border border-[#D4AF87]/30 rounded-xl text-[#985f99] text-sm hover:bg-[#985f99]/10 transition-colors">
-                    Menu <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isMenuOpen ? "rotate-180" : ""}`} />
-                  </button>
-                  {isMenuOpen && (
-                    <div className="absolute right-0 mt-2 w-52 bg-white border border-[#D4AF87]/20 rounded-2xl shadow-2xl overflow-hidden z-50">
-                      {navItems.map(({ mode, label, icon: Icon }) => (
-                        <button key={mode} onClick={() => { setViewMode(mode); setIsMenuOpen(false); }}
-                          className={`w-full text-left px-5 py-3.5 flex items-center gap-3 text-sm transition-colors ${viewMode === mode ? "bg-[#985f99]/10 text-[#985f99]" : "text-[#6B5E50] hover:bg-[#985f99]/5 hover:text-[#985f99]"}`}>
-                          <Icon className="w-4 h-4" /> {label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <button onClick={onLogout}
-                  className="p-2 rounded-xl bg-[#985f99]/5 hover:bg-red-50 border border-[#D4AF87]/30 text-[#6B5E50] hover:text-red-500 transition-all">
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* ── MAIN CONTENT ── */}
-        <main className="pt-24 sm:pt-28 px-4 sm:px-6 pb-12">
-          <div className="max-w-7xl mx-auto">
-
-            <div className="mb-10">
-              <p className="text-xs tracking-[4px] uppercase text-[#6B5E50]/60 mb-2">
-                {selectedDate.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-              </p>
-              <div className="flex items-center justify-between gap-4">
-                <h2 className="serif text-3xl sm:text-4xl text-[#985f99]">{viewLabel}</h2>
-
-                {(viewMode === "schedule" || viewMode === "monthly") && (
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => changeDate(-1)}
-                      className="p-2 bg-white border border-[#D4AF87]/20 rounded-xl hover:bg-[#985f99]/5 shadow-sm transition-colors">
-                      <ChevronLeft className="w-5 h-5 text-[#985f99]" />
-                    </button>
-                    <button onClick={() => setShowDatePicker(true)}
-                      className="p-2 bg-white border border-[#D4AF87]/20 rounded-xl hover:bg-[#985f99]/5 shadow-sm transition-colors">
-                      <Calendar className="w-5 h-5 text-[#985f99]" />
-                    </button>
-                    <button onClick={() => changeDate(1)}
-                      className="p-2 bg-white border border-[#D4AF87]/20 rounded-xl hover:bg-[#985f99]/5 shadow-sm transition-colors">
-                      <ChevronRight className="w-5 h-5 text-[#985f99]" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* ─ SCHEDULE ─ */}
-            {viewMode === "schedule" && (
-              <div>
-                <div className="mb-5">
-                  <select value={selectedTech} onChange={e => setSelectedTech(e.target.value)}
-                    className="px-4 py-2.5 bg-white border border-[#D4AF87]/20 rounded-xl text-sm text-[#6B5E50] focus:outline-none focus:border-[#985f99]/40 shadow-sm transition-colors appearance-none">
-                    <option value="">All Technicians</option>
-                    {availableTechs.map(t => <option key={t.id} value={t.name}>{t.name} {t.active_status ? "●" : "○"}</option>)}
-                  </select>
-                </div>
-
-                <div className="stat-card border border-[#D4AF87]/20 rounded-2xl shadow-sm overflow-hidden">
-                  {selectedBookings.filter(b => b.status !== "cancelled").length === 0 ? (
-                    <div className="p-16 text-center text-[#6B5E50]/40 text-sm">A quiet day in the sanctuary</div>
-                  ) : (
-                    <div className="divide-y divide-[#D4AF87]/10">
-                      {hours.map(hour => {
-                        const hourBookings = selectedBookings.filter(b => b.hour === hour && b.status !== "cancelled");
-                        if (hourBookings.length === 0) return null;
-                        return (
-                          <div key={hour} className="p-4 sm:p-5">
-                            <p className="text-xs font-semibold tracking-widest uppercase text-[#6B5E50]/40 mb-3">
-                              {hour.toString().padStart(2, "0")}:00
-                            </p>
-                            <div className="space-y-3">
-                              {hourBookings.map(booking => (
-                                <div key={booking.id}
-                                  className={`rounded-xl p-4 sm:p-5 border-l-4 bg-gradient-to-r from-white to-[#F8F6F2] shadow-sm hover:shadow-md transition-all ${booking.status === "confirmed" ? "border-[#985f99]" : "border-[#D4AF87]"}`}>
-                                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="flex items-center gap-3 mb-1">
-                                        <span className="serif text-lg text-[#985f99]">{booking.time}</span>
-                                        <span className="text-sm font-medium text-[#985f99] truncate">{booking.client}</span>
-                                      </div>
-                                      <p className="text-sm text-[#6B5E50]/70 truncate">{booking.services.join(" · ")}</p>
-                                      <p className="text-xs text-[#6B5E50]/40 mt-0.5">with {booking.technician}</p>
-                                    </div>
-                                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-3 flex-shrink-0">
-                                      <p className="font-semibold text-[#D4AF87]">R{booking.totalPrice.toFixed(2)}</p>
-                                      {/* ── Info · Edit · Cancel ── */}
-                                      <BookingActions booking={booking} />
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* ─ MONTHLY ─ */}
-            {viewMode === "monthly" && (
-              <div className="stat-card border border-[#D4AF87]/20 rounded-2xl shadow-sm p-4 sm:p-6">
-                <div className="grid grid-cols-7 gap-1 text-center">
-                  {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => (
-                    <div key={d} className="py-2 text-xs font-semibold tracking-widest text-[#985f99]/60 uppercase">{d}</div>
-                  ))}
-                  {(() => {
-                    const year = selectedDate.getFullYear();
-                    const month = selectedDate.getMonth();
-                    const firstDay = new Date(year, month, 1).getDay();
-                    const daysInMonth = new Date(year, month + 1, 0).getDate();
-                    const cells = [];
-                    for (let i = 0; i < firstDay; i++) cells.push(<div key={`e-${i}`} />);
-                    for (let d = 1; d <= daysInMonth; d++) {
-                      const dateKey = formatDateKey(new Date(year, month, d));
-                      const dayBookings = (bookings[dateKey] || []).filter(b => b.status !== "cancelled" && (!selectedTech || b.technician === selectedTech));
-                      cells.push(
-                        <div key={d}
-                          className={`p-2 rounded-xl transition-all min-h-[60px] sm:min-h-[80px] ${dayBookings.length > 0 ? "bg-[#985f99]/10 border border-[#985f99]/20 hover:bg-[#985f99]/15" : "bg-[#F8F6F2] border border-[#D4AF87]/10 hover:bg-[#985f99]/5"}`}>
-                          <p
-                            className={`text-sm font-medium cursor-pointer ${dayBookings.length > 0 ? "text-[#985f99]" : "text-[#6B5E50]/50"}`}
-                            onClick={() => { setSelectedDate(new Date(year, month, d)); setViewMode("schedule"); }}
-                          >
-                            {d}
-                          </p>
-                          <div className="mt-1 space-y-1 overflow-hidden">
-                            {dayBookings.slice(0, 2).map(b => (
-                              <div key={b.id} className="flex items-center justify-between gap-1 group">
-                                {/* clicking the text navigates to day view */}
-                                <span
-                                  className="text-[10px] text-[#985f99]/70 truncate cursor-pointer hover:text-[#985f99]"
-                                  onClick={() => { setSelectedDate(new Date(year, month, d)); setViewMode("schedule"); }}
-                                >
-                                  {b.time} {b.client}
-                                </span>
-                                {/* info icon — visible on hover */}
-                                <button
-                                  onClick={() => setClientDetailBooking(b)}
-                                  className="opacity-0 group-hover:opacity-100 flex-shrink-0 p-0.5 rounded text-[#6B5E50]/50 hover:text-[#985f99] transition-all"
-                                  title="Client details"
-                                >
-                                  <Info className="w-3 h-3" />
-                                </button>
-                              </div>
-                            ))}
-                            {dayBookings.length > 2 && (
-                              <div
-                                className="text-[10px] text-[#6B5E50]/40 cursor-pointer hover:text-[#985f99]"
-                                onClick={() => { setSelectedDate(new Date(year, month, d)); setViewMode("schedule"); }}
-                              >
-                                +{dayBookings.length - 2} more
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }
-                    return cells;
-                  })()}
-                </div>
-              </div>
-            )}
-
-            {/* ─ SERVICES ─ */}
-            {viewMode === "services" && (
-              <div className="space-y-6">
-                {/* Add Service button */}
-                <div className="flex justify-end">
-                  <button onClick={() => setShowServiceModal(true)}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-[#985f99] hover:bg-[#985f99]/90 text-white rounded-xl text-sm font-medium shadow-sm hover:shadow-md transition-all">
-                    <Plus className="w-4 h-4" /> Add Service
-                  </button>
-                </div>
-
-                {Object.entries(groupedServices).map(([category, items]) => (
-                  <div key={category}>
-                    <div className="flex items-center gap-3 mb-3">
-                      <p className="text-xs tracking-widest uppercase text-[#6B5E50]/40 font-semibold">{category}</p>
-                      <div className="flex-1 h-px bg-[#D4AF87]/15" />
-                      <span className="text-[10px] text-[#6B5E50]/30 font-medium">{items.length} {items.length === 1 ? 'service' : 'services'}</span>
-                    </div>
-                    <div className="space-y-2">
-                      {items.map(service => {
-                        const isEditing = editingServiceId === service.id;
-                        return (
-                          <div key={service.id} className="stat-card border border-[#D4AF87]/20 rounded-xl shadow-sm overflow-hidden">
-                            {isEditing ? (
-                              <div className="edit-card p-5 sm:p-6 bg-gradient-to-br from-white to-[#F8F6F2]/50">
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                  <div>
-                                    <label className={S.label}>Name</label>
-                                    <input type="text" value={editingServiceData.name}
-                                      onChange={e => setEditingServiceData(p => ({ ...p, name: e.target.value }))}
-                                      className={S.inlineInput} />
-                                  </div>
-                                  <div>
-                                    <label className={S.label}>Price (R)</label>
-                                    <input type="number" min="0" step="0.01" value={editingServiceData.price}
-                                      onChange={e => setEditingServiceData(p => ({ ...p, price: e.target.value }))}
-                                      className={S.inlineInput} />
-                                  </div>
-                                  <div>
-                                    <label className={S.label}>Duration (min)</label>
-                                    <input type="number" min="1" value={editingServiceData.duration}
-                                      onChange={e => setEditingServiceData(p => ({ ...p, duration: e.target.value }))}
-                                      className={S.inlineInput} />
-                                  </div>
-                                </div>
-                                <div className="mt-4">
-                                  <label className={S.label}>Category</label>
-                                  <input type="text" value={editingServiceData.category}
-                                    onChange={e => setEditingServiceData(p => ({ ...p, category: e.target.value }))}
-                                    className={S.inlineInput} placeholder="e.g. Nails, Massage, Facial" />
-                                </div>
-                                <div className="flex gap-2 mt-5">
-                                  <button onClick={() => saveService(service.id)} disabled={savingService}
-                                    className="flex items-center gap-1.5 px-5 py-2.5 bg-[#985f99] hover:bg-[#985f99]/90 text-white rounded-xl text-xs font-semibold transition-all disabled:opacity-50 shadow-sm">
-                                    <Save className="w-3.5 h-3.5" />
-                                    {savingService ? "Saving…" : "Save Changes"}
-                                  </button>
-                                  <button onClick={cancelEditService}
-                                    className="flex items-center gap-1.5 px-5 py-2.5 bg-white hover:bg-[#F8F6F2] border border-[#D4AF87]/30 text-[#6B5E50] rounded-xl text-xs font-semibold transition-all">
-                                    Cancel
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="service-row p-4 sm:p-5 flex items-center justify-between group hover:bg-white/80 transition-all cursor-default">
-                                <div className="flex items-center gap-4 min-w-0">
-                                  <div className="w-10 h-10 rounded-xl bg-[#985f99]/8 border border-[#985f99]/10 flex items-center justify-center flex-shrink-0">
-                                    <Scissors className="w-4 h-4 text-[#985f99]/60" />
-                                  </div>
-                                  <div className="min-w-0">
-                                    <p className="font-medium text-[#2d1f2d]">{service.name}</p>
-                                    <div className="flex items-center gap-2 mt-0.5">
-                                      <Clock className="w-3 h-3 text-[#6B5E50]/30" />
-                                      <span className="text-xs text-[#6B5E50]/50">{service.duration} min</span>
-                                    </div>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                  <p className="font-semibold text-[#D4AF87] text-base">R{service.price.toFixed(2)}</p>
-                                  <button onClick={() => startEditService(service)}
-                                    className="edit-trigger flex items-center gap-1.5 px-3 py-1.5 bg-[#985f99]/8 hover:bg-[#985f99]/15 border border-[#985f99]/15 rounded-lg text-xs font-medium text-[#985f99] transition-all">
-                                    <Pencil className="w-3 h-3" /> Edit
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
+          {viewMode === "schedule" && (
+            <div className="space-y-5 animate-rise">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3" data-testid="day-summary">
+                {[
+                  { label: "Appointments", value: daySummary.count, icon: CalendarDays },
+                  { label: "Booked revenue", value: `R${money(daySummary.revenue)}`, icon: Wallet },
+                  { label: "Hours booked", value: `${daySummary.hours}h`, icon: Clock },
+                  { label: "Technicians busy", value: daySummary.techs, icon: Users2 },
+                ].map(({ label, value, icon: Icon }) => (
+                  <div key={label} className="bb-card-soft px-4 py-3 flex items-center gap-3">
+                    <span className="w-9 h-9 rounded-xl bg-plum/[0.07] flex items-center justify-center flex-shrink-0"><Icon className="w-4 h-4 text-plum" /></span>
+                    <div className="min-w-0"><p className="bb-kicker">{label}</p><p className="serif text-xl text-plum leading-tight">{value}</p></div>
                   </div>
                 ))}
-                {services.length === 0 && (
-                  <div className="text-center py-20">
-                    <Scissors className="w-10 h-10 text-[#D4AF87]/30 mx-auto mb-3" />
-                    <p className="text-[#6B5E50]/40 text-sm">No services yet</p>
-                    <button onClick={() => setShowServiceModal(true)}
-                      className="mt-3 text-xs font-medium text-[#985f99] hover:text-[#985f99]/80 transition-colors">
-                      + Add your first service
-                    </button>
-                  </div>
-                )}
               </div>
-            )}
 
-            {/* ─ TECHNICIANS ─ */}
-            {viewMode === "agents" && (
-              <div>
-                <div className="flex justify-end mb-5">
-                  <button onClick={() => setShowTechModal(true)}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-[#985f99] hover:bg-[#985f99]/90 text-white rounded-xl text-sm font-medium shadow-sm hover:shadow-md transition-all">
-                    <Plus className="w-4 h-4" /> Add Technician
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  {availableTechs.map(agent => {
-                    const isEditing = editingTechId === agent.id;
-                    return (
-                      <div key={agent.id} className="stat-card border border-[#D4AF87]/20 rounded-xl shadow-sm overflow-hidden">
-                        {isEditing ? (
-                          <div className="edit-card p-5 sm:p-6 bg-gradient-to-br from-white to-[#F8F6F2]/50">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                              <div>
-                                <label className={S.label}>Name</label>
-                                <input type="text" value={editingTechData.name}
-                                  onChange={e => setEditingTechData(p => ({ ...p, name: e.target.value }))}
-                                  className={S.inlineInput} />
-                              </div>
-                              <div>
-                                <label className={S.label}>Specialization</label>
-                                <input type="text" value={editingTechData.specialization}
-                                  onChange={e => setEditingTechData(p => ({ ...p, specialization: e.target.value }))}
-                                  className={S.inlineInput} placeholder="e.g. Massage, Nails" />
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-3 mt-4 p-3 bg-[#F8F6F2] rounded-xl">
-                              <span className="text-xs font-semibold tracking-widest uppercase text-[#6B5E50]/50">Status</span>
-                              <button type="button"
-                                onClick={() => setEditingTechData(p => ({ ...p, active_status: !p.active_status }))}
-                                className={`toggle-pill ${editingTechData.active_status ? "on" : "off"}`}
-                                aria-label="Toggle active status">
-                                <span className="knob" />
-                              </button>
-                              <span className={`text-xs font-medium ${editingTechData.active_status ? "text-emerald-600" : "text-[#6B5E50]/50"}`}>
-                                {editingTechData.active_status ? "Active — available for bookings" : "Inactive — hidden from bookings"}
-                              </span>
-                            </div>
-                            <div className="flex gap-2 mt-5">
-                              <button onClick={() => saveTech(agent.id)} disabled={savingTech}
-                                className="flex items-center gap-1.5 px-5 py-2.5 bg-[#985f99] hover:bg-[#985f99]/90 text-white rounded-xl text-xs font-semibold transition-all disabled:opacity-50 shadow-sm">
-                                <Save className="w-3.5 h-3.5" />
-                                {savingTech ? "Saving…" : "Save Changes"}
-                              </button>
-                              <button onClick={cancelEditTech}
-                                className="flex items-center gap-1.5 px-5 py-2.5 bg-white hover:bg-[#F8F6F2] border border-[#D4AF87]/30 text-[#6B5E50] rounded-xl text-xs font-semibold transition-all">
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="tech-row p-4 sm:p-5 hover:bg-white/80 transition-all">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${agent.active_status ? "bg-emerald-50 border border-emerald-200/50" : "bg-red-50 border border-red-200/50"}`}>
-                                  <div className={`w-2.5 h-2.5 rounded-full glow-dot ${agent.active_status ? "bg-emerald-500 text-emerald-500" : "bg-red-400 text-red-400"}`} />
-                                </div>
-                                <div className="min-w-0">
-                                  <p className="font-semibold text-[#2d1f2d]">{agent.name}</p>
-                                  <div className="flex items-center gap-2 mt-0.5">
-                                    <span className="text-xs text-[#6B5E50]/50 truncate">{agent.email}</span>
-                                    <span className="text-[#D4AF87]/40">·</span>
-                                    <span className="text-xs text-[#985f99]/60 font-medium">{agent.specialization || "General"}</span>
-                                  </div>
-                                </div>
-                              </div>
-                              <button onClick={() => startEditTech(agent)}
-                                className="edit-trigger flex items-center gap-1.5 px-3 py-1.5 bg-[#985f99]/8 hover:bg-[#985f99]/15 border border-[#985f99]/15 rounded-lg text-xs font-medium text-[#985f99] transition-all flex-shrink-0">
-                                <Pencil className="w-3 h-3" /> Edit
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {availableTechs.length === 0 && (
-                    <div className="text-center py-20">
-                      <UserCog className="w-10 h-10 text-[#D4AF87]/30 mx-auto mb-3" />
-                      <p className="text-[#6B5E50]/40 text-sm">No technicians yet</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-          </div>
-        </main>
-
-        {/* ── TOAST ── */}
-        {toast && (
-          <div className={`fixed bottom-6 right-4 sm:right-8 px-5 py-3.5 rounded-2xl shadow-2xl z-[120] text-sm font-medium border flex items-center gap-3 ${toast.type === "success" ? "bg-emerald-50 border-emerald-200 text-emerald-700" : toast.type === "error" ? "bg-red-50 border-red-200 text-red-700" : "bg-[#985f99]/10 border-[#985f99]/20 text-[#985f99]"}`}>
-            {toast.message}
-            <button onClick={() => setToast(null)}><X className="w-4 h-4 opacity-50 hover:opacity-100" /></button>
-          </div>
-        )}
-
-        {/* ── UNDO TOAST ── */}
-        {deletedBooking && (
-          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 bg-[#985f99] text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-4 z-[120] text-sm font-medium">
-            Booking cancelled
-            <button onClick={undoDelete} className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-colors">
-              <Undo2 className="w-3.5 h-3.5" /> Undo
-            </button>
-          </div>
-        )}
-
-        {/* ── DATE PICKER ── */}
-        {showDatePicker && (
-          <div className={S.modalOverlay}>
-            <div className="bg-white border border-[#D4AF87]/20 rounded-3xl p-8 max-w-sm w-full shadow-2xl">
-              <h3 className="serif text-2xl text-[#985f99] mb-6">Select Date</h3>
-              <input type="date" onChange={e => { setSelectedDate(new Date(e.target.value + "T12:00:00")); setShowDatePicker(false); }}
-                className={S.inputClass} />
-              <button onClick={() => setShowDatePicker(false)} className={`mt-4 w-full ${S.btnSecondary}`}>Close</button>
-            </div>
-          </div>
-        )}
-
-
-
-        {/* ── BOOKING MODAL ── */}
-        {showBookingModal && (
-          <div className={S.modalOverlay}>
-            <div className={`${S.modalBox} max-w-2xl`}>
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="serif text-2xl text-[#985f99]">{editingBooking ? "Edit" : "New"} Booking</h3>
-                <button onClick={() => { setShowBookingModal(false); resetForm(); }}
-                  className="p-2 rounded-xl hover:bg-[#F8F6F2] text-[#6B5E50] transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <form onSubmit={confirmBooking} className="space-y-5">
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className={S.label}>Date</label>
-                    <input type="date" required value={bookingForm.date}
-                      onChange={e => setBookingForm(p => ({ ...p, date: e.target.value }))}
-                      className={S.inputClass} />
-                  </div>
-                  <div className="relative">
-                    <label className={S.label}>Client</label>
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6B5E50]/40" />
-                      <input type="text" placeholder="Search by name or phone..."
-                        className={`${S.inputClass} pl-9`}
-                        value={clientSearch || bookingForm.clientName}
-                        onChange={e => { setClientSearch(e.target.value); setBookingForm(p => ({ ...p, clientName: e.target.value, clientId: null })); }} />
-                    </div>
-                    {filteredClients.length > 0 && (
-                      <div className="absolute z-10 w-full mt-1 bg-white border border-[#D4AF87]/20 rounded-xl shadow-2xl max-h-48 overflow-auto">
-                        {filteredClients.map(client => (
-                          <button key={client.id} type="button" onClick={() => selectClient(client)}
-                            className="w-full text-left px-4 py-3 hover:bg-[#F8F6F2] border-b border-[#D4AF87]/10 last:border-0 transition-colors">
-                            <p className="text-sm font-medium text-[#985f99]">{client.name}</p>
-                            <p className="text-xs text-[#6B5E50]/50">{client.phone}</p>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <button type="button" onClick={() => setShowClientModal(true)}
-                      className="mt-2 flex items-center gap-1.5 text-xs text-[#D4AF87] hover:text-[#985f99] font-medium transition-colors">
-                      <UserPlus className="w-3.5 h-3.5" /> Add New Client
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className={S.label}>Services</label>
-                  <div className="space-y-4 max-h-72 overflow-y-auto pr-1">
-                    {Object.entries(groupedServices).map(([category, items]) => (
-                      <div key={category}>
-                        <p className="text-xs font-semibold text-[#6B5E50]/40 tracking-widest uppercase mb-2">{category}</p>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {items.map(service => {
-                            const isSelected = bookingForm.selectedServices.some(s => s.id === service.id);
-                            return (
-                              <label key={service.id} onClick={() => toggleService(service)}
-                                className={`flex items-center justify-between p-3 rounded-xl border-2 cursor-pointer transition-all ${isSelected ? "border-[#985f99] bg-[#985f99]/10" : "border-[#D4AF87]/20 hover:border-[#D4AF87]/40 bg-white"}`}>
-                                <div>
-                                  <p className={`text-sm font-medium ${isSelected ? "text-[#985f99]" : "text-[#2d1f2d]"}`}>{service.name}</p>
-                                  <p className="text-xs text-[#6B5E50]/50">R{service.price} · {service.duration}min</p>
-                                </div>
-                                <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 ${isSelected ? "border-[#985f99] bg-[#985f99]" : "border-[#D4AF87]/40"}`}>
-                                  {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
-                                </div>
-                              </label>
-                            );
-                          })}
+              <div className={`${S.statCard} overflow-hidden`} data-testid="schedule">
+                {loadingMonth && activeDay.length === 0 ? (
+                  <div className="p-5"><ListSkeleton rows={2} height="h-24" /></div>
+                ) : activeDay.length === 0 ? (
+                  <EmptyState icon={CalendarX2} title="A quiet day in the sanctuary" hint={selectedTech ? "No appointments for this technician on this day." : "Nothing booked yet for this day."}
+                    action={<button onClick={() => setBookingModal({})} className="bb-btn-primary px-5 py-2.5"><Plus className="w-4 h-4" /> New booking</button>} />
+                ) : (
+                  <div className="divide-y divide-gold/15">
+                    {hours.map((hour) => (
+                      <section key={hour} className="p-3 sm:p-4">
+                        <p className="bb-kicker mb-2 pl-1">{String(hour).padStart(2, "0")}:00</p>
+                        <div className="space-y-2">
+                          {activeDay.filter((b) => sastHourOf(b.start_time) === hour).map((b) => (
+                            <BookingCard key={b.id} b={b} onInfo={setClientDetail} onEdit={(bk) => setBookingModal({ booking: bk })} onStatus={setStatus} />
+                          ))}
                         </div>
-                      </div>
+                      </section>
                     ))}
                   </div>
-                  {totalPrice > 0 && (
-                    <div className="mt-3 p-3 bg-[#F8F6F2] border border-[#D4AF87]/20 rounded-xl flex justify-between items-center">
-                      <span className="text-sm text-[#6B5E50]/60">Total</span>
-                      <span className="font-semibold text-[#985f99]">R{totalPrice.toFixed(2)} · {totalDuration}min</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className={S.label}>Technician</label>
-                    <select value={bookingForm.technician}
-                      onChange={e => setBookingForm(p => ({ ...p, technician: e.target.value }))}
-                      className={S.inputClass}>
-                      <option value="">Select technician</option>
-                      <option value="auto">Auto-assign</option>
-                      {availableTechs.map(t => <option key={t.id} value={t.name}>{t.name}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={S.label}>Time (SAST)</label>
-                    <input type="time" required value={bookingForm.time}
-                      onChange={e => setBookingForm(p => ({ ...p, time: e.target.value }))}
-                      className={S.inputClass} />
-                  </div>
-                </div>
-
-                <div className="flex gap-3 pt-2">
-                  <button type="button" onClick={() => { setShowBookingModal(false); resetForm(); }} className={S.btnSecondary}>Cancel</button>
-                  <button type="submit" className={S.btnPrimary}>{editingBooking ? "Update" : "Confirm"} Booking</button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* ── CLIENT MODAL ── */}
-        {showClientModal && (
-          <div className={S.modalOverlay}>
-            <div className={`${S.modalBox} max-w-md`}>
-              <h3 className="serif text-2xl text-[#985f99] mb-6">Add New Client</h3>
-              <div className="space-y-3">
-                <div><label className={S.label}>Full Name</label>
-                  <input type="text" placeholder="Jane Smith" value={newClient.name}
-                    onChange={e => setNewClient(p => ({ ...p, name: e.target.value }))} className={S.inputClass} /></div>
-                <div><label className={S.label}>Phone</label>
-                  <input type="tel" placeholder="+27 000 000 0000" value={newClient.phone}
-                    onChange={e => setNewClient(p => ({ ...p, phone: e.target.value }))} className={S.inputClass} /></div>
-                <div><label className={S.label}>Email (optional)</label>
-                  <input type="email" placeholder="jane@example.com" value={newClient.email}
-                    onChange={e => setNewClient(p => ({ ...p, email: e.target.value }))} className={S.inputClass} /></div>
-              </div>
-              <div className="flex gap-3 mt-6">
-                <button onClick={() => setShowClientModal(false)} className={S.btnSecondary}>Cancel</button>
-                <button onClick={addClient} className={S.btnPrimary}>Add Client</button>
+                )}
+                {dayBookings.some((b) => INACTIVE.includes(b.status)) && (
+                  <details className="border-t border-gold/15 p-3 sm:p-4 group">
+                    <summary className="text-xs text-muted cursor-pointer select-none hover:text-plum">Cancelled on this day ({dayBookings.filter((b) => INACTIVE.includes(b.status)).length})</summary>
+                    <div className="space-y-2 mt-3">{dayBookings.filter((b) => INACTIVE.includes(b.status)).map((b) => <BookingCard key={b.id} b={b} onInfo={setClientDetail} onStatus={setStatus} compact />)}</div>
+                  </details>
+                )}
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ── TECH MODAL ── */}
-        {showTechModal && (
-          <div className={S.modalOverlay}>
-            <div className={`${S.modalBox} max-w-md`}>
-              <h3 className="serif text-2xl text-[#985f99] mb-6">Add Technician</h3>
-              <div className="space-y-3">
-                <div><label className={S.label}>Name</label>
-                  <input type="text" placeholder="Full name" value={newTech.name}
-                    onChange={e => setNewTech(p => ({ ...p, name: e.target.value }))} className={S.inputClass} /></div>
-                <div><label className={S.label}>Email</label>
-                  <input type="email" placeholder="email@blackbird.com" value={newTech.email}
-                    onChange={e => setNewTech(p => ({ ...p, email: e.target.value }))} className={S.inputClass} /></div>
-                <div><label className={S.label}>Password</label>
-                  <input type="password" placeholder="••••••••" value={newTech.password}
-                    onChange={e => setNewTech(p => ({ ...p, password: e.target.value }))} className={S.inputClass} /></div>
-                <div><label className={S.label}>Specialization (optional)</label>
-                  <input type="text" placeholder="e.g. Massage, Nails" value={newTech.specialization}
-                    onChange={e => setNewTech(p => ({ ...p, specialization: e.target.value }))} className={S.inputClass} /></div>
-              </div>
-              <div className="flex gap-3 mt-6">
-                <button onClick={() => { setShowTechModal(false); setNewTech({ name: "", email: "", password: "", specialization: "" }); }} className={S.btnSecondary}>Cancel</button>
-                <button onClick={addTechnician} className={S.btnPrimary}>Add Technician</button>
+          {viewMode === "monthly" && (
+            <div className={`${S.statCard} p-3 sm:p-5 animate-rise`}>
+              <div className="grid grid-cols-7 gap-1.5 text-center">
+                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="py-2 bb-kicker text-plum">{d}</div>)}
+                {(() => {
+                  const [y, m] = dateKey.split("-").map(Number);
+                  const offset = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;
+                  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+                  const cells = [];
+                  for (let i = 0; i < offset; i++) cells.push(<div key={`e-${i}`} />);
+                  for (let d = 1; d <= days; d++) {
+                    const key = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+                    const list = (bookingsByDay[key] || []).filter((b) => !INACTIVE.includes(b.status) && (!selectedTech || b.agent?.id === selectedTech));
+                    const weekend = ((offset + d - 1) % 7) >= 5;
+                    cells.push(
+                      <button key={d} onClick={() => { setDateKey(key); setViewMode("schedule"); }}
+                        className={`p-2 rounded-xl min-h-[64px] sm:min-h-[92px] text-left transition-all border ${list.length ? "bg-plum/[0.07] border-plum/20 hover:bg-plum/10" : weekend ? "bg-gold/[0.08] border-gold/15 hover:bg-gold/15" : "bg-white/60 border-gold/15 hover:bg-plum/5"} ${key === todayKey ? "ring-2 ring-plum/40" : ""}`}>
+                        <div className="flex items-center justify-between">
+                          <span className={`text-sm font-medium ${list.length ? "text-plum" : "text-muted"}`}>{d}</span>
+                          {list.length > 0 && <span className="bb-chip bg-plum text-white !px-1.5 !text-[10px]">{list.length}</span>}
+                        </div>
+                        <div className="mt-1 space-y-0.5 overflow-hidden hidden sm:block">
+                          {list.slice(0, 2).map((b) => <p key={b.id} className="text-[10px] text-plum truncate">{toSastTime(b.start_time)} {b.client?.name}</p>)}
+                          {list.length > 2 && <p className="text-[10px] text-muted">+{list.length - 2} more</p>}
+                        </div>
+                      </button>
+                    );
+                  }
+                  return cells;
+                })()}
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ── ADD SERVICE MODAL ── */}
-        {showServiceModal && (
-          <div className={S.modalOverlay}>
-            <div className={`${S.modalBox} max-w-md`}>
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="serif text-2xl text-[#985f99]">Add New Service</h3>
-                <button onClick={() => { setShowServiceModal(false); setNewService({ name: "", price: "", duration: "", category: "" }); }}
-                  className="p-2 rounded-xl hover:bg-[#F8F6F2] text-[#6B5E50] transition-colors">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className={S.label}>Service Name</label>
-                  <input type="text" placeholder="e.g. Swedish Massage" value={newService.name}
-                    onChange={e => setNewService(p => ({ ...p, name: e.target.value }))} className={S.inputClass} />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className={S.label}>Price (R)</label>
-                    <input type="number" min="0" step="0.01" placeholder="350.00" value={newService.price}
-                      onChange={e => setNewService(p => ({ ...p, price: e.target.value }))} className={S.inputClass} />
-                  </div>
-                  <div>
-                    <label className={S.label}>Duration (min)</label>
-                    <input type="number" min="1" placeholder="60" value={newService.duration}
-                      onChange={e => setNewService(p => ({ ...p, duration: e.target.value }))} className={S.inputClass} />
-                  </div>
-                </div>
-                <div>
-                  <label className={S.label}>Category</label>
-                  <input type="text" placeholder="e.g. Massage, Nails, Facial" value={newService.category}
-                    onChange={e => setNewService(p => ({ ...p, category: e.target.value }))} className={S.inputClass} />
-                </div>
-              </div>
-              <div className="flex gap-3 mt-6">
-                <button onClick={() => { setShowServiceModal(false); setNewService({ name: "", price: "", duration: "", category: "" }); }}
-                  className={S.btnSecondary}>Cancel</button>
-                <button onClick={addService} className={S.btnPrimary}>Add Service</button>
-              </div>
-            </div>
-          </div>
-        )}
+          {viewMode === "clients" && (
+            <ClientsPanel showToast={showToast} onBook={(c) => setBookingModal({ client: c })} onOpenBooking={(b) => setBookingModal({ booking: b })} />
+          )}
+          {viewMode === "services" && <ServicesManager showToast={showToast} onChanged={(active) => setServices(active)} />}
+          {viewMode === "agents" && <TechniciansManager showToast={showToast} isAdmin={user.role === "admin"} currentUserId={user.id} onChanged={setStaff} />}
+        </div>
+      </main>
 
-        {/* ── CONFIRMATION MODAL ── */}
-        {showConfirmation && confirmedBooking && (
-          <div className={S.modalOverlay}>
-            <div className="bg-white border border-[#D4AF87]/20 rounded-3xl p-8 max-w-md w-full shadow-2xl text-center">
-              <div className="w-16 h-16 bg-[#985f99]/10 border border-[#985f99]/20 rounded-full flex items-center justify-center mx-auto mb-6">
-                <Check className="w-8 h-8 text-[#985f99]" />
-              </div>
-              <h3 className="serif text-2xl text-[#985f99] mb-6">Booking Confirmed</h3>
-              <div className="space-y-3 text-left">
-                {[
-                  { label: "Client", value: confirmedBooking.client },
-                  ...(confirmedBooking.clientPhone ? [{ label: "Phone", value: confirmedBooking.clientPhone }] : []),
-                  ...(confirmedBooking.clientEmail ? [{ label: "Email", value: confirmedBooking.clientEmail }] : []),
-                  { label: "Services", value: confirmedBooking.services.join(" · ") },
-                  { label: "Time", value: confirmedBooking.time },
-                  { label: "Technician", value: confirmedBooking.technician },
-                ].map(({ label, value }) => (
-                  <div key={label} className="flex justify-between items-start py-3 border-b border-[#D4AF87]/10 last:border-0">
-                    <span className="text-sm text-[#6B5E50]/50">{label}</span>
-                    <span className="text-sm font-medium text-[#985f99] text-right max-w-[60%]">{value}</span>
-                  </div>
-                ))}
-                <div className="flex justify-between items-center pt-2">
-                  <span className="text-sm text-[#6B5E50]/50">Total</span>
-                  <span className="font-semibold text-[#D4AF87]">R{confirmedBooking.totalPrice.toFixed(2)}</span>
-                </div>
-              </div>
-              <button onClick={() => setShowConfirmation(false)} className={`mt-8 w-full ${S.btnPrimary}`}>Done</button>
-            </div>
-          </div>
-        )}
+      <Toast toast={toast} onClose={clearToast} />
 
-        {/* ── CLIENT DETAIL MODAL ── */}
-        {clientDetailBooking && (
-          <ClientDetailModal
-            booking={clientDetailBooking}
-            clients={clients}
-            onClose={() => setClientDetailBooking(null)}
-          />
-        )}
+      {undo && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 bg-ink text-white px-5 py-3 rounded-2xl shadow-float flex items-center gap-4 z-[120] text-sm font-medium animate-rise">
+          Booking cancelled
+          <button onClick={undoCancel} className="bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-xl flex items-center gap-1.5"><Undo2 className="w-3.5 h-3.5" /> Undo</button>
+        </div>
+      )}
 
+      {bookingModal && (
+        <BookingModal booking={bookingModal.booking || null} initialClient={bookingModal.client || null} dateKey={dateKey} services={services} staff={staff} clients={clients}
+          onClientAdded={(c) => setClients((p) => [...p, c])} onClose={() => setBookingModal(null)} showToast={showToast}
+          onSaved={async (saved) => { setBookingModal(null); const k = sastDateKeyOf(saved.start_time); setDateKey(k); setViewMode("schedule"); await loadMonth(k); }} />
+      )}
+
+      {clientDetail && <BookingInfoModal booking={clientDetail} onClose={() => setClientDetail(null)} showToast={showToast} />}
+    </div>
+  );
+}
+
+function BookingInfoModal({ booking, onClose, showToast }) {
+  const [link, setLink] = useState("");
+  useEffect(() => { api(`/bookings/${booking.id}/manage-link`).then((d) => setLink(d.manage_url)).catch(() => {}); }, [booking.id]);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(link); showToast("success", "Manage link copied — send it to the client"); } catch { showToast("error", "Could not copy"); }
+  };
+  return (
+    <Modal title="Booking details" subtitle={`${toSastTime(booking.start_time)}–${toSastTime(booking.end_time)} · ${booking.services.map((s) => s.name).join(", ")}`} onClose={onClose} width="max-w-md">
+      <div className="flex items-center gap-3 mb-4">
+        <Avatar name={booking.client?.name} size={44} rounded="rounded-full" />
+        <div><p className="font-semibold text-ink">{booking.client?.name}</p><p className="text-xs text-muted">{booking.client?.phone}{booking.client?.email ? ` · ${booking.client.email}` : ""}</p></div>
       </div>
-    </>
+      {[["Technician", booking.agent?.name], ["Status", STATUS_LABEL[booking.status] || booking.status], ["Total", `R${money(booking.total_price)}`], ["Notes", booking.notes]].map(([label, value]) => (
+        <div key={label} className="flex justify-between items-start py-2.5 border-b border-gold/15">
+          <span className="bb-kicker pt-0.5">{label}</span>
+          <span className="text-sm font-medium text-plum text-right max-w-[60%] break-words">{value || "—"}</span>
+        </div>
+      ))}
+      <div className="pt-4">
+        <p className="bb-kicker mb-2">Client self-service link</p>
+        <p className="text-xs text-muted mb-2">Lets the client reschedule or cancel online. It's in their confirmation email; copy it here to resend.</p>
+        <div className="flex gap-2">
+          <input readOnly value={link} className={S.inlineInput} data-testid="manage-link-input" />
+          <button onClick={copy} disabled={!link} className="bb-btn-secondary px-4 text-xs">Copy</button>
+        </div>
+      </div>
+    </Modal>
   );
 }

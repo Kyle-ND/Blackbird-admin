@@ -142,7 +142,7 @@ const LandingPage = ({
           >
             <img
               src={loadedImages[currentIndex]}
-              alt={`slide-${currentIndex}`}
+              alt="" aria-hidden="true"
               className={`${imageClass} w-full h-full`}
             />
           </motion.div>

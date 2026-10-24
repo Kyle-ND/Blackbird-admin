@@ -25,9 +25,9 @@
 //   Acrylics: "bg-purple-100 text-purple-700",
 //   Pedicures: "bg-blue-100 text-blue-700",
 //   "Lash Extensions": "bg-yellow-100 text-yellow-700",
-//   "Eyebrow Services": "bg-amber-100 text-amber-700",
-//   Waxing: "bg-emerald-100 text-emerald-700",
-//   "Makeup Services": "bg-red-100 text-red-700",
+//   "Eyebrow Services": "bg-amber-100 text-bronze",
+//   Waxing: "bg-plum/15 text-plum",
+//   "Makeup Services": "bg-berry/15 text-berry",
 //   "Men's Services": "bg-gray-100 text-gray-700",
 // };
 
@@ -220,7 +220,7 @@
 //           <button onClick={() => setActiveTab("today")} className="relative p-3 hover:bg-gray-100 rounded-xl">
 //             <Bell className="w-6 h-6" />
 //             {todayAppointments > 0 && (
-//               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
+//               <span className="absolute -top-1 -right-1 bg-berry text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
 //                 {todayAppointments}
 //               </span>
 //             )}
@@ -284,7 +284,7 @@
 //                           {a.time} {a.title}
 //                         </div>
 //                         <button onClick={(e) => { e.stopPropagation(); deleteAppointment(date, a); }}
-//                           className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 bg-red-500 text-white rounded-full p-1">
+//                           className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 bg-berry text-white rounded-full p-1">
 //                           <Trash2 className="w-3 h-3" />
 //                         </button>
 //                       </div>
@@ -305,7 +305,7 @@
 //                       <div className="flex-1 py-4">
 //                         {appts.length > 0 ? appts.map(apt => (
 //                           <div key={apt.id} className="relative group mb-4">
-//                             <button onClick={() => deleteAppointment(currentDate, apt)} className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 bg-red-500 text-white rounded-full p-2 z-10">
+//                             <button onClick={() => deleteAppointment(currentDate, apt)} className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 bg-berry text-white rounded-full p-2 z-10">
 //                               <Trash2 className="w-4 h-4" />
 //                             </button>
 //                             <div onClick={() => { setEditingAppointment(apt); setNewAppointment(apt); setShowModal(true); }}
@@ -381,7 +381,7 @@
 //                     <div className="font-semibold text-lg">{c.name}</div>
 //                     <div className="text-sm text-gray-600">{c.phone || "No phone"}</div>
 //                   </div>
-//                   <button className="text-red-600"><Trash2 className="w-5 h-5" /></button>
+//                   <button className="text-berry"><Trash2 className="w-5 h-5" /></button>
 //                 </div>
 //               ))}
 //             </div>

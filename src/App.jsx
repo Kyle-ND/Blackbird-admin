@@ -1,71 +1,75 @@
 // src/App.jsx
-import React, { useState, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import LoginPage from "./components/LoginPage";
 import ReceptionistDashboard from "./components/ReceptionistDashboard";
 import AgentDashboard from "./components/AgentDashboard";
-import ManagerDashboard from "./components/ManagerDashboard"; // Make sure this file exists!
+import ManagerDashboard from "./components/ManagerDashboard";
+import { api, getToken, isTokenExpired } from "./lib/api";
+import ProgressBar from "./components/shared/ProgressBar";
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(true);
+  // Admins can switch between the manager view and the front-desk view.
+  const [adminView, setAdminView] = useState(() => localStorage.getItem("bb:adminView") || "manager");
 
-  // On app load, check if there's a valid token
-  useEffect(() => {
-    const token = localStorage.getItem("access_token");
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        const role = payload.role || "agent";
-        const name = payload.name || payload.email?.split("@")[0] || "User";
-        const formattedName = name
-          .split(" ")
-          .map((n) => n.charAt(0).toUpperCase() + n.slice(1).toLowerCase())
-          .join(" ");
-
-        setUser({ role, name: formattedName });
-        setIsLoggedIn(true);
-      } catch (err) {
-        localStorage.removeItem("access_token");
-        setIsLoggedIn(false);
-      }
-    }
+  const logout = useCallback(() => {
+    localStorage.removeItem("access_token");
+    setUser(null);
   }, []);
 
-  const handleLogin = (role, name) => {
-    setUser({ role, name });
-    setIsLoggedIn(true);
+  // Validate the stored token against the API on load (roles / status may have changed).
+  useEffect(() => {
+    const token = getToken();
+    if (!token || isTokenExpired(token)) {
+      localStorage.removeItem("access_token");
+      setChecking(false);
+      return;
+    }
+    api("/me")
+      .then((me) => setUser({ id: me.id, role: me.role, name: me.name, email: me.email }))
+      .catch(() => localStorage.removeItem("access_token"))
+      .finally(() => setChecking(false));
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("bb:unauthorized", logout);
+    return () => window.removeEventListener("bb:unauthorized", logout);
+  }, [logout]);
+
+  const handleLogin = (profile) => setUser(profile);
+
+  const switchAdminView = (view) => {
+    localStorage.setItem("bb:adminView", view);
+    setAdminView(view);
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("userRole"); // optional cleanup
-    localStorage.removeItem("userName");
-    setIsLoggedIn(false);
-    setUser(null);
-  };
-
-  if (!isLoggedIn) {
-    return <LoginPage onLogin={handleLogin} />;
+  if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="serif text-2xl text-plum animate-pulse">blackbird</p>
+      </div>
+    );
   }
 
-  // Role-based routing
-  if (user.role === "agent") {
-    return <AgentDashboard user={user} onLogout={handleLogout} />;
+  if (!user) return <LoginPage onLogin={handleLogin} />;
+
+  if (user.role === "agent") return <AgentDashboard user={user} onLogout={logout} />;
+
+  if (user.role === "receptionist") return <ReceptionistDashboard user={user} onLogout={logout} />;
+
+  if (user.role === "admin") {
+    return adminView === "frontdesk" ? (
+      <ReceptionistDashboard user={user} onLogout={logout} onSwitchView={() => switchAdminView("manager")} />
+    ) : (
+      <ManagerDashboard user={user} onLogout={logout} onSwitchView={() => switchAdminView("frontdesk")} />
+    );
   }
 
-  if (user.role === "receptionist") {
-    return <ReceptionistDashboard user={user} onLogout={handleLogout} />;
-  }
-
-  // Handle both "admin" and "manager" roles
-  if (user.role === "admin" || user.role === "manager") {
-    return <ManagerDashboard user={user} onLogout={handleLogout} />;
-  }
-
-  // Fallback — should never hit this now
   return (
-    <div className="min-h-screen bg-[#F8F6F2] flex items-center justify-center">
-      <div className="text-xl text-red-600">Invalid role: {user.role}</div>
+    <div className="min-h-screen bg-cream flex items-center justify-center flex-col gap-4">
+      <div className="text-xl text-berry">Unknown role: {user.role}</div>
+      <button onClick={logout} className="px-4 py-2 rounded-xl bg-plum text-white">Sign out</button>
     </div>
   );
 }

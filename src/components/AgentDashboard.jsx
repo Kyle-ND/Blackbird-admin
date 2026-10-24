@@ -1,282 +1,212 @@
-import React, { useState, useEffect } from "react";
-import { LogOut, X, CalendarDays, ChevronDown } from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { CalendarDays, Clock, Palmtree, KeyRound, Wallet, Sparkles, CalendarX2, Camera, StickyNote, Phone } from "lucide-react";
+import { api, money, sastDateKeyOf, sastHourOf, shiftDateKey, toSastDateKey, toSastTime } from "../lib/api";
+import { S, Modal, Toast, useToast, ListSkeleton, EmptyState, StatusChip } from "./shared/ui";
+import TopBar from "./shared/TopBar";
+import PageHeader from "./shared/PageHeader";
+import Avatar, { fileToSquareDataUrl } from "./shared/Avatar";
 
-const formatDateKey = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-const fixDecimalResponse = (text) => {
-  try { return JSON.parse(text); }
-  catch {
-    const fixed = text
-      .replace(/Decimal\('([\d.]+)'\)/g, '"$1"')
-      .replace(/Decimal\("([\d.]+)"\)/g, '"$1"');
-    return JSON.parse(fixed);
-  }
-};
-
-// ── TIMEZONE HELPER: parse any date string safely as SAST local naive time ──
-const parseToSASTDate = (dateString) => {
-  if (!dateString) return new Date();
-  const cleanString = dateString.replace(/Z$/, "").replace(/(\+[0-9]{2}:[0-9]{2}|-[0-9]{2}:[0-9]{2})$/, "");
-  return new Date(cleanString.includes("T")
-    ? `${cleanString}+02:00`
-    : `${cleanString}T00:00:00+02:00`
-  );
-};
-
-// ── TIMEZONE HELPER: get SAST hour integer from UTC/ISO string ──
-const getSASTHour = (dateString) => {
-  return parseInt(
-    parseToSASTDate(dateString).toLocaleString("en-US", {
-      hour: "numeric",
-      hour12: false,
-      timeZone: "Africa/Johannesburg",
-    }),
-    10
-  );
-};
-
-// ── TIMEZONE HELPER: format UTC/ISO string as SAST time display ──
-const toSASTTime = (dateString) => {
-  return parseToSASTDate(dateString).toLocaleTimeString("en-ZA", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Africa/Johannesburg",
-  });
-};
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const INACTIVE = ["cancelled", "late_cancel"];
 
 export default function AgentDashboard({ user, onLogout }) {
-  const [bookings, setBookings] = useState({});
+  const [dateKey, setDateKey] = useState(() => toSastDateKey());
+  const [bookings, setBookings] = useState([]);
+  const [availability, setAvailability] = useState([]);
+  const [timeOff, setTimeOff] = useState([]);
+  const [me, setMe] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [toast, setToast] = useState(null);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [toast, showToast, clearToast] = useToast();
+  const [showPassword, setShowPassword] = useState(false);
+  const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
+  const todayKey = toSastDateKey();
 
-  // ── FIX: use SAST today key, not UTC ──
-  const todayKey = new Date().toLocaleDateString("en-CA", {
-    timeZone: "Africa/Johannesburg",
-  });
-
-  const hours = Array.from({ length: 12 }, (_, i) => i + 9);
-
-  useEffect(() => {
-    const fetchBookings = async () => {
-      const token = localStorage.getItem("access_token");
-      if (!token) { setError("Authentication required."); setLoading(false); return; }
-      try {
-        const res = await fetch("/proxy-api/agents/me/bookings", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) throw new Error("Failed to load appointments");
-        const text = await res.text();
-        const data = fixDecimalResponse(text);
-        const grouped = data.reduce((acc, b) => {
-          // ── FIX: group by SAST date, not UTC date ──
-          const dateKey = parseToSASTDate(b.start_time).toLocaleDateString("en-CA", {
-            timeZone: "Africa/Johannesburg",
-          });
-          if (!acc[dateKey]) acc[dateKey] = [];
-          const price = typeof b.total_price === "string" ? parseFloat(b.total_price) : b.total_price || 0;
-          acc[dateKey].push({
-            id: b.id,
-            // ── FIX: display time in SAST ──
-            time: toSASTTime(b.start_time),
-            // ── FIX: hour in SAST for schedule grouping ──
-            hour: getSASTHour(b.start_time),
-            client: b.client.name,
-            services: b.services.map(s => s.name),
-            totalPrice: price,
-            totalDuration: b.services.reduce((sum, s) => sum + s.duration_minutes, 0),
-            status: b.status,
-          });
-          return acc;
-        }, {});
-        setBookings(grouped);
-      } catch (err) {
-        setError(err.message || "Failed to connect");
-        setToast({ type: "error", message: err.message || "Failed to load appointments" });
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchBookings();
+  const loadDay = useCallback(async (key) => {
+    setLoading(true); setError("");
+    try {
+      const data = await api(`/agents/me/bookings?date_from=${key}&date_to=${key}`);
+      setBookings(data.filter((b) => sastDateKeyOf(b.start_time) === key).sort((a, b) => a.start_time.localeCompare(b.start_time)));
+    } catch (err) { setError(err.message || "Failed to load appointments"); } finally { setLoading(false); }
   }, []);
 
-  const todayBookings = (bookings[todayKey] || []).sort((a, b) => a.time.localeCompare(b.time));
+  useEffect(() => { loadDay(dateKey); }, [dateKey, loadDay]);
+  useEffect(() => {
+    api("/agents/me").then(setMe).catch(() => {});
+    api("/agents/me/availability").then((d) => setAvailability(d.availability || [])).catch(() => {});
+    api("/agents/me/time-off").then(setTimeOff).catch(() => {});
+  }, []);
 
-  if (loading) return (
-    <div className="min-h-screen bg-[#F8F6F2] flex items-center justify-center">
-      <p className="text-xl text-[#985f99]/50">Loading...</p>
-    </div>
+  const uploadPhoto = async (file) => {
+    if (!file) return;
+    try {
+      const photo_url = await fileToSquareDataUrl(file);
+      setMe(await api("/agents/me", { method: "PATCH", body: { photo_url } }));
+      showToast("success", "Photo updated — clients will see it on the website");
+    } catch (err) { showToast("error", err.message); }
+  };
+
+  const changePassword = async (e) => {
+    e.preventDefault();
+    if (pw.next !== pw.confirm) return showToast("error", "New passwords do not match");
+    try {
+      await api("/agents/me/password", { method: "PATCH", body: { current_password: pw.current, new_password: pw.next } });
+      showToast("success", "Password updated");
+      setShowPassword(false); setPw({ current: "", next: "", confirm: "" });
+    } catch (err) { showToast("error", err.message); }
+  };
+
+  const active = useMemo(() => bookings.filter((b) => !INACTIVE.includes(b.status)), [bookings]);
+  const hours = [...new Set(active.map((b) => sastHourOf(b.start_time)))].sort((a, b) => a - b);
+  const stats = useMemo(() => {
+    const minutes = active.reduce((s, b) => s + Math.round((new Date(b.end_time) - new Date(b.start_time)) / 60000), 0);
+    const revenue = active.filter((b) => ["confirmed", "completed"].includes(b.status)).reduce((s, b) => s + parseFloat(b.total_price || 0), 0);
+    const next = active.find((b) => new Date(b.start_time) > new Date());
+    return { count: active.length, hours: Math.round(minutes / 6) / 10, revenue, next };
+  }, [active]);
+
+  const weekday = DAYS[(new Date(`${dateKey}T12:00:00+02:00`).getUTCDay() + 6) % 7];
+  const todayHours = availability.find((a) => a.day === weekday);
+  const offToday = timeOff.some((t) => t.start_date <= dateKey && t.end_date >= dateKey);
+
+  const extra = (
+    <button onClick={() => setShowPassword(true)} title="Change password" aria-label="Change password" className="bb-icon-btn hidden md:inline-flex"><KeyRound className="w-4 h-4" /></button>
   );
-
-  if (error) return (
-    <div className="min-h-screen bg-[#F8F6F2] flex items-center justify-center">
-      <p className="text-red-500 bg-white px-8 py-5 rounded-2xl shadow">{error}</p>
-    </div>
-  );
-
-  const confirmedCount = todayBookings.filter(b => b.status === "confirmed").length;
 
   return (
-    <>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
-      <style>{`
-        body { background: #F8F6F2; }
-        .stat-card { background: linear-gradient(135deg, rgba(255,255,255,0.95) 0%, rgba(248,246,242,0.8) 100%); }
-        * { font-family: 'DM Sans', sans-serif; }
-        .serif { font-family: 'DM Serif Display', serif; }
-      `}</style>
+    <div className="min-h-screen text-ink">
+      <TopBar area="Technician" navItems={[{ mode: "me", label: "My Appointments", icon: CalendarDays }]} viewMode="me" onNavigate={() => {}} user={user} photoUrl={me?.photo_url} onLogout={onLogout} extra={extra} />
 
-      <div className="min-h-screen bg-[#F8F6F2] text-[#2d1f2d]">
+      <main className="pt-24 sm:pt-28 px-4 sm:px-6 pb-16">
+        <div className="max-w-7xl mx-auto">
+          <PageHeader title={`Hi, ${user?.name?.split(" ")[0]}`} subtitle={offToday ? "You're on leave this day." : todayHours && !todayHours.is_available ? "Your day off." : todayHours ? `Working ${todayHours.start_time}–${todayHours.end_time}` : ""} dateKey={dateKey} onDateChange={setDateKey} onStep={(d) => setDateKey(shiftDateKey(dateKey, d))} />
 
-        {/* ── NAV ── */}
-        <header className="fixed top-0 left-0 right-0 z-[100]">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4 sm:pt-5 pb-3">
-            <div className="flex items-center justify-between bg-white/90 backdrop-blur-2xl border border-[#D4AF87]/20 rounded-2xl px-4 sm:px-6 py-3 sm:py-4 shadow-lg">
-
-              {/* Logo */}
-              <div className="flex items-center gap-2 sm:gap-3">
-                <h1 className="serif text-xl sm:text-2xl text-[#985f99] tracking-tight">blackbird</h1>
-                <span className="hidden sm:block text-[10px] tracking-[4px] text-[#6B5E50] uppercase font-medium mt-0.5">Spa</span>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <div className="lg:col-span-2 space-y-5 animate-rise">
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: "Appointments", value: stats.count, icon: CalendarDays, testId: "agent-count" },
+                  { label: "Hours booked", value: `${stats.hours}h`, icon: Clock },
+                  { label: "Value", value: `R${money(stats.revenue)}`, icon: Wallet },
+                ].map(({ label, value, icon: Icon, testId }) => (
+                  <div key={label} className="bb-card-soft px-4 py-3 flex items-center gap-3">
+                    <span className="w-9 h-9 rounded-xl bg-plum/[0.07] hidden sm:flex items-center justify-center flex-shrink-0"><Icon className="w-4 h-4 text-plum" /></span>
+                    <div className="min-w-0"><p className="bb-kicker">{label}</p><p className="serif text-xl text-plum leading-tight" data-testid={testId}>{value}</p></div>
+                  </div>
+                ))}
               </div>
 
-              {/* Active nav pill */}
-              <nav className="hidden md:flex items-center gap-1">
-                <button className="px-4 py-2 rounded-xl text-sm font-medium bg-[#985f99]/15 text-[#985f99] border border-[#985f99]/20 flex items-center gap-2">
-                  <CalendarDays className="w-4 h-4" /> Appointments
-                </button>
-              </nav>
-
-              {/* Right side */}
-              <div className="flex items-center gap-2 sm:gap-3">
-                <span className="text-sm text-[#6B5E50]/60 hidden lg:block">{user?.name}</span>
-
-                {/* Mobile label */}
-                <div className="relative md:hidden">
-                  <button onClick={() => setIsMenuOpen(!isMenuOpen)}
-                    className="flex items-center gap-1.5 px-3 py-2 bg-[#985f99]/5 border border-[#D4AF87]/30 rounded-xl text-[#985f99] text-sm hover:bg-[#985f99]/10 transition-colors">
-                    <CalendarDays className="w-4 h-4" />
-                    <span>Menu</span>
-                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isMenuOpen ? "rotate-180" : ""}`} />
-                  </button>
-                  {isMenuOpen && (
-                    <div className="absolute right-0 mt-2 w-48 bg-white border border-[#D4AF87]/20 rounded-2xl shadow-2xl overflow-hidden z-50">
-                      <div className="px-5 py-3.5 flex items-center gap-3 text-sm bg-[#985f99]/10 text-[#985f99]">
-                        <CalendarDays className="w-4 h-4" /> Appointments
-                      </div>
-                    </div>
-                  )}
+              {stats.next && dateKey === todayKey && (
+                <div className="bb-card p-4 flex items-center gap-4 border-plum/25 bg-plum/[0.04]">
+                  <span className="w-10 h-10 rounded-xl bg-plum text-white flex items-center justify-center flex-shrink-0"><Sparkles className="w-5 h-5" /></span>
+                  <div className="min-w-0"><p className="bb-kicker">Up next</p><p className="text-sm text-ink truncate"><strong>{toSastTime(stats.next.start_time)}</strong> · {stats.next.client?.name} · {stats.next.services.map((s) => s.name).join(", ")}</p></div>
                 </div>
+              )}
 
-                <button onClick={onLogout}
-                  className="p-2 rounded-xl bg-[#985f99]/5 hover:bg-red-50 border border-[#D4AF87]/30 text-[#6B5E50] hover:text-red-500 transition-all">
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* ── MAIN CONTENT ── */}
-        <main className="pt-24 sm:pt-28 px-4 sm:px-6 pb-12">
-          <div className="max-w-7xl mx-auto">
-
-            {/* Page header */}
-            <div className="mb-8">
-              <p className="text-xs tracking-[4px] uppercase text-[#6B5E50]/60 mb-2">
-                {new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Africa/Johannesburg" })}
-              </p>
-              <h2 className="serif text-3xl sm:text-4xl text-[#985f99]">
-                Hi, {user?.name}
-              </h2>
-            </div>
-
-            {/* Stats row */}
-            <div className="mb-8">
-              <div className="stat-card border border-[#D4AF87]/20 rounded-2xl p-5 sm:p-7 shadow-sm inline-block">
-                <p className="text-xs tracking-widest uppercase text-[#6B5E50]/50 mb-4">Today's Appointments</p>
-                <p className="serif text-4xl sm:text-5xl text-[#985f99]">{confirmedCount}</p>
-              </div>
-            </div>
-
-            {/* Schedule */}
-            <div className="stat-card border border-[#D4AF87]/20 rounded-2xl shadow-sm overflow-hidden">
-              {todayBookings.filter(b => b.status !== "cancelled").length === 0 ? (
-                <div className="p-16 text-center text-[#6B5E50]/40 text-sm">
-                  A quiet day in the sanctuary
+              {error && (
+                <div role="alert" className="bg-berry/10 border border-berry/25 text-berry rounded-2xl p-4 flex items-center justify-between gap-4 text-sm">
+                  <span>{error}</span><button onClick={() => loadDay(dateKey)} className="bb-btn-secondary px-3 py-1.5 text-xs">Retry</button>
                 </div>
-              ) : (
-                <div className="divide-y divide-[#D4AF87]/10">
-                  {hours.map(hour => {
-                    const hourBookings = todayBookings.filter(b => b.hour === hour && b.status !== "cancelled");
-                    if (hourBookings.length === 0) return null;
-                    return (
-                      <div key={hour} className="p-4 sm:p-5">
-                        <p className="text-xs font-semibold tracking-widest uppercase text-[#6B5E50]/40 mb-3">
-                          {hour.toString().padStart(2, "0")}:00
-                        </p>
-                        <div className="space-y-3">
-                          {hourBookings.map(booking => (
-                            <div key={booking.id}
-                              className={`rounded-xl p-4 sm:p-5 border-l-4 bg-gradient-to-r from-white to-[#F8F6F2] shadow-sm ${
-                                booking.status === "confirmed"
-                                  ? "border-[#985f99]"
-                                  : booking.status === "completed"
-                                  ? "border-[#D4AF87] opacity-70"
-                                  : "border-red-300 opacity-50"
-                              }`}>
-                              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-3 mb-1">
-                                    <span className="serif text-lg text-[#985f99]">{booking.time}</span>
-                                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                                      booking.status === "confirmed" ? "bg-[#985f99]/10 text-[#985f99]"
-                                      : booking.status === "completed" ? "bg-[#D4AF87]/20 text-[#6B5E50]"
-                                      : "bg-red-50 text-red-400"
-                                    }`}>
-                                      {booking.status}
-                                    </span>
+              )}
+
+              <div className={`${S.statCard} overflow-hidden`}>
+                {loading ? <div className="p-4"><ListSkeleton rows={2} height="h-24" /></div> : active.length === 0 ? (
+                  <EmptyState icon={CalendarX2} title="A quiet day in the sanctuary" hint="No appointments on this day." />
+                ) : (
+                  <div className="divide-y divide-gold/15">
+                    {hours.map((hour) => (
+                      <section key={hour} className="p-3 sm:p-4">
+                        <p className="bb-kicker mb-2 pl-1">{String(hour).padStart(2, "0")}:00</p>
+                        <div className="space-y-2">
+                          {active.filter((b) => sastHourOf(b.start_time) === hour).map((b) => {
+                            const duration = Math.round((new Date(b.end_time) - new Date(b.start_time)) / 60000);
+                            return (
+                              <article key={b.id} data-testid="agent-booking" className="relative bb-card-soft bg-white/80 p-4 pl-5">
+                                <span className={`absolute left-0 top-3 bottom-3 w-1 rounded-r ${b.status === "completed" ? "bg-gold" : b.status === "pending" ? "bg-gold" : "bg-plum"}`} />
+                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-3 flex-wrap">
+                                      <span className="serif text-lg text-plum whitespace-nowrap">{toSastTime(b.start_time)}–{toSastTime(b.end_time)}</span>
+                                      <StatusChip status={b.status} />
+                                    </div>
+                                    <p className="font-semibold text-ink mt-1 flex items-center gap-2 flex-wrap">{b.client?.name}{b.client?.phone && <span className="text-xs font-normal text-muted flex items-center gap-1"><Phone className="w-3 h-3" /> {b.client.phone}</span>}</p>
+                                    <p className="text-sm text-muted mt-0.5">{b.services.map((s) => s.name).join(" · ")}</p>
+                                    {b.notes && <p className="text-xs text-muted italic mt-1 flex items-center gap-1"><StickyNote className="w-3 h-3" /> {b.notes}</p>}
                                   </div>
-                                  <p className="font-medium text-[#985f99] truncate">{booking.client}</p>
-                                  <p className="text-sm text-[#6B5E50]/60 mt-0.5 truncate">{booking.services.join(" · ")}</p>
+                                  <div className="flex sm:flex-col items-center sm:items-end justify-between gap-1 flex-shrink-0">
+                                    <p className="font-semibold text-bronze">R{money(b.total_price)}</p>
+                                    <p className="text-xs text-muted flex items-center gap-1"><Clock className="w-3 h-3" />{duration} min</p>
+                                  </div>
                                 </div>
-                                <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2 flex-shrink-0">
-                                  <p className="font-semibold text-[#D4AF87]">R{booking.totalPrice.toFixed(2)}</p>
-                                  <p className="text-xs text-[#6B5E50]/40">{booking.totalDuration} min</p>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
+                              </article>
+                            );
+                          })}
                         </div>
+                      </section>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <aside className="space-y-4 animate-rise">
+              <div className={`${S.statCard} p-5 flex items-center gap-4`}>
+                <label className="relative cursor-pointer group" title="Change my photo">
+                  <Avatar name={user?.name} src={me?.photo_url} size={56} rounded="rounded-full" />
+                  <span className="absolute inset-0 rounded-full bg-ink/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white transition-opacity"><Camera className="w-4 h-4" /></span>
+                  <input type="file" accept="image/*" className="hidden" onChange={(e) => { uploadPhoto(e.target.files?.[0]); e.target.value = ""; }} data-testid="my-photo-file" />
+                </label>
+                <div className="min-w-0">
+                  <p className="font-semibold text-ink truncate">{user?.name}</p>
+                  <p className="text-xs text-muted truncate">{me?.specialization || "Technician"}</p>
+                  <p className="text-[11px] text-plum mt-1">Tap the photo to change it</p>
+                </div>
+              </div>
+
+              <div className={`${S.statCard} p-5`}>
+                <p className="bb-kicker mb-3">My working hours</p>
+                <div className="space-y-1">
+                  {DAYS.map((day) => {
+                    const d = availability.find((a) => a.day === day);
+                    const on = d ? d.is_available : true;
+                    return (
+                      <div key={day} className={`flex justify-between text-sm py-1 rounded-lg px-2 -mx-2 ${day === weekday ? "bg-plum/[0.06]" : ""}`}>
+                        <span className="text-bark">{day}</span>
+                        <span className={on ? "text-plum tabular-nums" : "text-muted"}>{on ? `${d?.start_time || "08:00"} – ${d?.end_time || "18:00"}` : "Off"}</span>
                       </div>
                     );
                   })}
                 </div>
-              )}
-            </div>
+              </div>
 
+              <div className={`${S.statCard} p-5`}>
+                <p className="bb-kicker mb-3 flex items-center gap-2"><Palmtree className="w-3.5 h-3.5 text-bronze" /> Upcoming time off</p>
+                {timeOff.length === 0 ? <p className="text-sm text-muted">None scheduled. Ask the front desk to block days for you.</p> : (
+                  <ul className="space-y-2 text-sm">
+                    {timeOff.map((t) => (
+                      <li key={t.id} className="flex justify-between gap-2"><span className="text-bark">{t.start_date}{t.end_date !== t.start_date ? ` → ${t.end_date}` : ""}</span><span className="text-muted truncate">{t.reason || ""}</span></li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button onClick={() => setShowPassword(true)} className="bb-btn-secondary w-full py-3 md:hidden"><KeyRound className="w-4 h-4" /> Change password</button>
+            </aside>
           </div>
-        </main>
+        </div>
+      </main>
 
-        {/* ── TOAST ── */}
-        {toast && (
-          <div className={`fixed bottom-6 right-4 sm:right-8 px-5 py-3.5 rounded-2xl shadow-2xl z-[120] text-sm font-medium border flex items-center gap-3 ${
-            toast.type === "success" ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-            : toast.type === "error" ? "bg-red-50 border-red-200 text-red-700"
-            : "bg-[#985f99]/10 border-[#985f99]/20 text-[#985f99]"
-          }`}>
-            {toast.message}
-            <button onClick={() => setToast(null)}><X className="w-4 h-4 opacity-50 hover:opacity-100" /></button>
-          </div>
-        )}
-
-      </div>
-    </>
+      {showPassword && (
+        <Modal title="Change password" onClose={() => setShowPassword(false)} width="max-w-sm">
+          <form onSubmit={changePassword} className="space-y-3">
+            {["current", "next", "confirm"].map((k) => (
+              <input key={k} type="password" required minLength={6} value={pw[k]} onChange={(e) => setPw((p) => ({ ...p, [k]: e.target.value }))}
+                placeholder={k === "current" ? "Current password" : k === "next" ? "New password" : "Confirm new password"} className={S.input} />
+            ))}
+            <button type="submit" className="bb-btn-primary w-full py-3">Update password</button>
+          </form>
+        </Modal>
+      )}
+      <Toast toast={toast} onClose={clearToast} />
+    </div>
   );
 }

@@ -21,3 +21,17 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Playwright
+e2e/report/
+test-results/
+e2e/shots/
+e2e/shots-public/
+
+# build output (Vercel builds from source)
+/dist
+
+# local env + test artefacts
+.env
+/e2e/report
+/test-results
